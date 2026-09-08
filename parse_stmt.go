@@ -44,33 +44,19 @@ func (p *Parser) tableName(dst *string) error {
 	return nil
 }
 
-// parseEqual parses `column = value` into out.
-func (p *Parser) parseEqual(out *NamedCell) error {
-	var ok bool
-	if out.column, ok = p.tryName(); !ok {
-		return errors.New("expect column")
-	}
-	if !p.tryPunctuation("=") {
-		return errors.New("expect =")
-	}
-	return p.parseValue(&out.value)
-}
-
-// parseWhere parses an optional `WHERE col = val AND col = val ...`.
-func (p *Parser) parseWhere(out *[]NamedCell) error {
+// parseWhere parses an optional `WHERE <expression>`. The parser accepts any
+// boolean expression; the executor later pattern-matches the tree for a shape it
+// can serve.
+func (p *Parser) parseWhere(out *interface{}) error {
 	if !p.tryKeyword("WHERE") {
 		return nil
 	}
-	for {
-		var nc NamedCell
-		if err := p.parseEqual(&nc); err != nil {
-			return err
-		}
-		*out = append(*out, nc)
-		if !p.tryKeyword("AND") {
-			return nil
-		}
+	expr, err := p.parseExpr()
+	if err != nil {
+		return err
 	}
+	*out = expr
+	return nil
 }
 
 // commaList calls item until a ',' no longer follows. Requires at least one.
@@ -104,7 +90,7 @@ func (p *Parser) parseSelect(out *StmtSelect) error {
 	if err := p.tableName(&out.table); err != nil {
 		return err
 	}
-	return p.parseWhere(&out.keys)
+	return p.parseWhere(&out.cond)
 }
 
 // parseCreateTable parses `t (a int64, b string, primary key (a, b))`.
@@ -221,7 +207,7 @@ func (p *Parser) parseUpdate(out *StmtUpdate) error {
 	if err != nil {
 		return err
 	}
-	return p.parseWhere(&out.keys)
+	return p.parseWhere(&out.cond)
 }
 
 // parseDelete parses `t where k=2` (the DELETE FROM keywords are already eaten).
@@ -229,5 +215,5 @@ func (p *Parser) parseDelete(out *StmtDelete) error {
 	if err := p.tableName(&out.table); err != nil {
 		return err
 	}
-	return p.parseWhere(&out.keys)
+	return p.parseWhere(&out.cond)
 }

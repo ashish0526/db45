@@ -88,17 +88,6 @@ func (db *DB) execCreateTable(s *StmtCreatTable) error {
 	return nil
 }
 
-// lookupColumns resolves selected column names to indices in schema.Cols.
-func lookupColumns(schema *Schema, names []string) ([]int, error) {
-	idxs := make([]int, len(names))
-	for i, name := range names {
-		if idxs[i] = schema.colIndex(name); idxs[i] < 0 {
-			return nil, fmt.Errorf("no such column %q", name)
-		}
-	}
-	return idxs, nil
-}
-
 // makePKey checks that the WHERE equalities exactly cover the primary key and
 // returns a Row with those key cells filled.
 func makePKey(schema *Schema, keys []NamedCell) (Row, error) {
@@ -122,15 +111,6 @@ func makePKey(schema *Schema, keys []NamedCell) (Row, error) {
 		}
 	}
 	return row, nil
-}
-
-// subsetRow projects a full row down to the columns at idxs.
-func subsetRow(row Row, idxs []int) Row {
-	out := make(Row, len(idxs))
-	for i, idx := range idxs {
-		out[i] = row[idx]
-	}
-	return out
 }
 
 // checkExprCols walks an expression tree and errors on any column reference that
@@ -187,7 +167,7 @@ func (db *DB) execSelect(s *StmtSelect) ([]string, []Row, error) {
 		header[i] = exprLabel(e, i)
 	}
 
-	row, err := makePKey(schema, s.keys)
+	row, err := matchPKey(schema, s.cond)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -230,7 +210,7 @@ func (db *DB) execUpdate(s *StmtUpdate) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	row, err := makePKey(schema, s.keys)
+	row, err := matchPKey(schema, s.cond)
 	if err != nil {
 		return 0, err
 	}
@@ -272,7 +252,7 @@ func (db *DB) execDelete(s *StmtDelete) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	row, err := makePKey(schema, s.keys)
+	row, err := matchPKey(schema, s.cond)
 	if err != nil {
 		return 0, err
 	}

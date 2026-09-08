@@ -16,11 +16,13 @@ func TestParseSelect(t *testing.T) {
 	if s.table != "tbl" || len(s.cols) != 3 || s.cols[2] != "c" {
 		t.Fatalf("got %+v", s)
 	}
-	if len(s.keys) != 2 || s.keys[0].column != "x" || s.keys[0].value.I64 != 1 {
-		t.Fatalf("keys: %+v", s.keys)
+	// WHERE is now an expression tree: (x = 1) AND (y = 'z')
+	keys, ok := matchAllEq(s.cond, nil)
+	if !ok || len(keys) != 2 || keys[0].column != "x" || keys[0].value.I64 != 1 {
+		t.Fatalf("cond: %#v", s.cond)
 	}
-	if string(s.keys[1].value.Str) != "z" {
-		t.Fatalf("key 1: %+v", s.keys[1])
+	if string(keys[1].value.Str) != "z" {
+		t.Fatalf("key 1: %+v", keys[1])
 	}
 }
 
@@ -56,15 +58,15 @@ func TestParseUpdate(t *testing.T) {
 	if c, ok := s.value[0].expr.(*Cell); !ok || c.I64 != 2 {
 		t.Fatalf("set expr: %#v", s.value[0].expr)
 	}
-	if len(s.keys) != 2 {
-		t.Fatalf("keys: %+v", s.keys)
+	if keys, ok := matchAllEq(s.cond, nil); !ok || len(keys) != 2 {
+		t.Fatalf("cond: %#v", s.cond)
 	}
 }
 
 func TestParseDelete(t *testing.T) {
 	s := mustParse(t, "delete from link where src = 'a' and dst = 'b'").(*StmtDelete)
-	if s.table != "link" || len(s.keys) != 2 {
-		t.Fatalf("got %+v", s)
+	if keys, ok := matchAllEq(s.cond, nil); s.table != "link" || !ok || len(keys) != 2 {
+		t.Fatalf("got %+v cond %#v", s, s.cond)
 	}
 }
 

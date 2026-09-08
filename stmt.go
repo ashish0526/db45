@@ -10,13 +10,12 @@ type NamedCell struct {
 // the executor switches on the concrete type (Go keeps the type tag, unlike a
 // C void*).
 
-// StmtSelect is `select a*4-b, d+c from t where ...`. Output columns are now
-// arbitrary expressions; the WHERE clause is still "col = value AND ..." until
-// Step 0506.
+// StmtSelect is `select a*4-b, d+c from t where <expr>`. Both the output columns
+// and the WHERE clause are now arbitrary expressions.
 type StmtSelect struct {
 	table string
 	cols  []interface{} // output expressions
-	keys  []NamedCell
+	cond  interface{}   // WHERE expression, or nil
 }
 
 // ExprAssign is one `column = expression` in an UPDATE ... SET list.
@@ -38,15 +37,15 @@ type StmtInsert struct {
 	value []Cell
 }
 
-// StmtUpdate is `update t set a = a-b, b = a where k=2`.
+// StmtUpdate is `update t set a = a-b, b = a where <expr>`.
 type StmtUpdate struct {
 	table string
-	keys  []NamedCell
+	cond  interface{}
 	value []ExprAssign
 }
 
-// StmtDelete is `delete from t where k=2`.
+// StmtDelete is `delete from t where <expr>`.
 type StmtDelete struct {
 	table string
-	keys  []NamedCell
+	cond  interface{}
 }

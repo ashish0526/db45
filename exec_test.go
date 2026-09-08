@@ -122,4 +122,21 @@ func TestExecErrors(t *testing.T) {
 	if _, err := db.Exec("insert into t values (1, 'b')"); err == nil {
 		t.Error("duplicate insert should error")
 	}
+
+	// a non-equality WHERE is not a recognised access path until Step 0507
+	if _, err := db.Exec("select v from t where id > 0"); err == nil {
+		t.Error("range WHERE should be unimplemented at this step")
+	}
+}
+
+func TestExecWhereExpressionShape(t *testing.T) {
+	db := openDB(t)
+	db.Exec("create table t (a int64, b int64, v string, primary key (a, b))")
+	db.Exec("insert into t values (1, 2, 'hit')")
+
+	// AND is commutative for the matcher
+	r, err := db.Exec("select v from t where b = 2 and a = 1")
+	if err != nil || len(r.Values) != 1 || string(r.Values[0][0].Str) != "hit" {
+		t.Fatalf("r=%+v err=%v", r, err)
+	}
 }
