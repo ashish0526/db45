@@ -48,6 +48,32 @@ func TestExecEndToEnd(t *testing.T) {
 	}
 }
 
+func TestExecExpressionsInSelectAndUpdate(t *testing.T) {
+	db := openDB(t)
+	db.Exec("create table t (id int64, a int64, b int64, primary key (id))")
+	db.Exec("insert into t values (1, 10, 3)")
+
+	r, err := db.Exec("select a * 4 - b, b + a, id from t where id = 1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r.Values) != 1 || r.Values[0][0].I64 != 37 || r.Values[0][1].I64 != 13 || r.Values[0][2].I64 != 1 {
+		t.Fatalf("select exprs: %+v", r.Values)
+	}
+	if r.Header[0] != "col1" || r.Header[2] != "id" {
+		t.Fatalf("header: %v", r.Header)
+	}
+
+	// SET a = b, b = a must swap (both RHS see the old row)
+	if _, err := db.Exec("update t set a = b, b = a where id = 1"); err != nil {
+		t.Fatal(err)
+	}
+	r, _ = db.Exec("select a, b from t where id = 1")
+	if r.Values[0][0].I64 != 3 || r.Values[0][1].I64 != 10 {
+		t.Fatalf("swap failed: %+v", r.Values[0])
+	}
+}
+
 func TestExecCatalogPersists(t *testing.T) {
 	dir := t.TempDir() + "/log"
 

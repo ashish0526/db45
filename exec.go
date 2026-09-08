@@ -52,8 +52,7 @@ func (db *DB) ExecStmt(stmt interface{}) (r SQLResult, err error) {
 	case *StmtCreatTable:
 		err = db.execCreateTable(s)
 	case *StmtSelect:
-		r.Header = s.cols
-		r.Values, err = db.execSelect(s)
+		r.Header, r.Values, err = db.execSelect(s)
 	case *StmtInsert:
 		r.Updated, err = db.execInsert(s)
 	case *StmtUpdate:
@@ -134,24 +133,73 @@ func subsetRow(row Row, idxs []int) Row {
 	return out
 }
 
-func (db *DB) execSelect(s *StmtSelect) ([]Row, error) {
+// checkExprCols walks an expression tree and errors on any column reference that
+// is not in the schema — so `select nope from t` fails even when t is empty.
+func checkExprCols(schema *Schema, expr interface{}) error {
+	switch e := expr.(type) {
+	case string:
+		if schema.colIndex(e) < 0 {
+			return fmt.Errorf("no such column %q", e)
+		}
+	case *Cell:
+	case *ExprBinOp:
+		if err := checkExprCols(schema, e.left); err != nil {
+			return err
+		}
+		return checkExprCols(schema, e.right)
+	case *ExprUnOp:
+		return checkExprCols(schema, e.kid)
+	}
+	return nil
+}
+
+// exprLabel names an output column for the result header.
+func exprLabel(expr interface{}, i int) string {
+	if name, ok := expr.(string); ok {
+		return name
+	}
+	return fmt.Sprintf("col%d", i+1)
+}
+
+// projectRow evaluates each output expression against a full row.
+func projectRow(schema *Schema, exprs []interface{}, full Row) (Row, error) {
+	out := make(Row, len(exprs))
+	for i, e := range exprs {
+		c, err := evalExpr(schema, full, e)
+		if err != nil {
+			return nil, err
+		}
+		out[i] = *c
+	}
+	return out, nil
+}
+
+func (db *DB) execSelect(s *StmtSelect) ([]string, []Row, error) {
 	schema, err := db.GetSchema(s.table)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	idxs, err := lookupColumns(schema, s.cols)
-	if err != nil {
-		return nil, err
+	header := make([]string, len(s.cols))
+	for i, e := range s.cols {
+		if err := checkExprCols(schema, e); err != nil {
+			return nil, nil, err
+		}
+		header[i] = exprLabel(e, i)
 	}
+
 	row, err := makePKey(schema, s.keys)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	ok, err := db.Select(schema, row)
 	if err != nil || !ok {
-		return nil, err
+		return header, nil, err
 	}
-	return []Row{subsetRow(row, idxs)}, nil
+	proj, err := projectRow(schema, s.cols, row)
+	if err != nil {
+		return nil, nil, err
+	}
+	return header, []Row{proj}, nil
 }
 
 func (db *DB) execInsert(s *StmtInsert) (int, error) {
@@ -190,7 +238,10 @@ func (db *DB) execUpdate(s *StmtUpdate) (int, error) {
 	if err != nil || !ok {
 		return 0, err
 	}
-	for _, asn := range s.value {
+	// Evaluate every RHS against the OLD row first, then assign — so
+	// `SET a = b, b = a` swaps rather than cascades.
+	newVals := make([]Cell, len(s.value))
+	for i, asn := range s.value {
 		idx := schema.colIndex(asn.column)
 		if idx < 0 {
 			return 0, fmt.Errorf("no such column %q", asn.column)
@@ -198,8 +249,17 @@ func (db *DB) execUpdate(s *StmtUpdate) (int, error) {
 		if schema.isPKey(idx) {
 			return 0, errors.New("UPDATE cannot change a primary key column")
 		}
-		row[idx] = asn.value
-		row[idx].Type = schema.Cols[idx].Type
+		c, err := evalExpr(schema, row, asn.expr)
+		if err != nil {
+			return 0, err
+		}
+		if c.Type != schema.Cols[idx].Type {
+			return 0, fmt.Errorf("type mismatch assigning to %q", asn.column)
+		}
+		newVals[i] = *c
+	}
+	for i, asn := range s.value {
+		row[schema.colIndex(asn.column)] = newVals[i]
 	}
 	if _, err := db.Update(schema, row); err != nil {
 		return 0, err

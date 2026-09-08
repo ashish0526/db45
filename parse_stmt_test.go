@@ -50,8 +50,11 @@ func TestParseInsert(t *testing.T) {
 
 func TestParseUpdate(t *testing.T) {
 	s := mustParse(t, "update link set time = 2 where src = 'a' and dst = 'b'").(*StmtUpdate)
-	if s.table != "link" || len(s.value) != 1 || s.value[0].column != "time" || s.value[0].value.I64 != 2 {
+	if s.table != "link" || len(s.value) != 1 || s.value[0].column != "time" {
 		t.Fatalf("set: %+v", s.value)
+	}
+	if c, ok := s.value[0].expr.(*Cell); !ok || c.I64 != 2 {
+		t.Fatalf("set expr: %#v", s.value[0].expr)
 	}
 	if len(s.keys) != 2 {
 		t.Fatalf("keys: %+v", s.keys)

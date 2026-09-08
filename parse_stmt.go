@@ -85,17 +85,18 @@ func (p *Parser) commaList(item func() error) error {
 	}
 }
 
-// parseSelect parses the body after the SELECT keyword.
+// parseSelect parses the body after the SELECT keyword. Output columns are now
+// full expressions (parseExpr), not bare names.
 func (p *Parser) parseSelect(out *StmtSelect) error {
 	for !p.tryKeyword("FROM") {
 		if len(out.cols) > 0 && !p.tryPunctuation(",") {
 			return errors.New("expect comma")
 		}
-		name, ok := p.tryName()
-		if !ok {
-			return errors.New("expect column")
+		expr, err := p.parseExpr()
+		if err != nil {
+			return err
 		}
-		out.cols = append(out.cols, name)
+		out.cols = append(out.cols, expr)
 	}
 	if len(out.cols) == 0 {
 		return errors.New("expect column list")
@@ -203,11 +204,18 @@ func (p *Parser) parseUpdate(out *StmtUpdate) error {
 		return errors.New("expect SET")
 	}
 	err := p.commaList(func() error {
-		var nc NamedCell
-		if err := p.parseEqual(&nc); err != nil {
+		name, ok := p.tryName()
+		if !ok {
+			return errors.New("expect column")
+		}
+		if !p.tryPunctuation("=") {
+			return errors.New("expect =")
+		}
+		expr, err := p.parseExpr()
+		if err != nil {
 			return err
 		}
-		out.value = append(out.value, nc)
+		out.value = append(out.value, ExprAssign{column: name, expr: expr})
 		return nil
 	})
 	if err != nil {
