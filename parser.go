@@ -22,7 +22,7 @@ func isSpace(ch byte) bool {
 	}
 	return false
 }
-func isAlpha(ch byte) bool        { return 'a' <= (ch | 32) && (ch|32) <= 'z' } // ch|32 lowercases ASCII
+func isAlpha(ch byte) bool        { return 'a' <= (ch|32) && (ch|32) <= 'z' } // ch|32 lowercases ASCII
 func isDigit(ch byte) bool        { return '0' <= ch && ch <= '9' }
 func isNameStart(ch byte) bool    { return isAlpha(ch) || ch == '_' }
 func isNameContinue(ch byte) bool { return isAlpha(ch) || isDigit(ch) || ch == '_' }
