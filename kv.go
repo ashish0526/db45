@@ -14,6 +14,11 @@ import (
 // supplies its path.
 type KVOptions struct {
 	Dirpath string
+	// LogShreshold is the MemTable size at which Compact flushes it to an
+	// SSTable (0 = flush whenever non-empty). GrowthFactor drives size-tiered
+	// merging of adjacent SSTable levels; <= 1 (the zero value) disables it.
+	LogShreshold int
+	GrowthFactor float32
 }
 
 // KV is the storage engine. The directory holds the write-ahead log (kv_log),
@@ -196,15 +201,33 @@ func (kv *KV) Seek(key []byte) (SortedKVIter, error) {
 	return filterDeleted(it)
 }
 
-// Compact converts the current MemTable to a fresh SSTable and prepends it as
-// main[0], committing by recording the new level list in the metadata. Tombstones
-// are kept — main[0] is the newest level, not the last, so a delete marker still
-// has older copies to shadow. SSTable-to-SSTable merging (and dropping tombstones
-// at the last level) is Step 0704.
+// Compact does all pending compaction work: it flushes the MemTable to a new
+// main[0] SSTable, then repeatedly merges any level that has outgrown its target
+// into the next, backing up on each merge so a cascade can continue. (A real
+// database fires this automatically when the log crosses LogShreshold; here it
+// is called explicitly.)
 func (kv *KV) Compact() error {
-	if kv.mem.Size() == 0 {
-		return nil
+	if kv.mem.Size() > 0 && kv.mem.Size() >= kv.Options.LogShreshold {
+		if err := kv.compactLog(); err != nil {
+			return err
+		}
 	}
+	for i := 0; i+1 < len(kv.main); i++ {
+		if kv.shouldMerge(i) {
+			if err := kv.compactSSTable(i); err != nil {
+				return err
+			}
+			i-- // re-check this position; the merge may have pushed i+1 over
+			continue
+		}
+	}
+	return nil
+}
+
+// compactLog converts the current MemTable to a fresh SSTable and prepends it as
+// main[0]. Tombstones are kept — main[0] is the newest level, not the last, so a
+// delete marker still has older copies to shadow.
+func (kv *KV) compactLog() error {
 	dir := kv.Options.Dirpath
 	kv.version++
 	name := fmt.Sprintf("sstable_%d", kv.version)
@@ -225,4 +248,56 @@ func (kv *KV) Compact() error {
 	}
 	kv.mem.Clear()
 	return kv.log.Truncate()
+}
+
+// shouldMerge implements a size-tiered policy: merge adjacent levels i and i+1
+// when they are within GrowthFactor of the same size, so runs coalesce and level
+// sizes grow geometrically. This keeps the level count O(log N) and so bounds the
+// read cost; tuning GrowthFactor (and LogShreshold, the flush size) trades write
+// amplification against read amplification and space — the central LSM knob.
+func (kv *KV) shouldMerge(i int) bool {
+	if kv.Options.GrowthFactor <= 1 {
+		return false
+	}
+	lower := float64(kv.main[i+1].Size())
+	upper := float64(kv.main[i].Size())
+	return lower <= float64(kv.Options.GrowthFactor)*upper
+}
+
+// compactSSTable merges level i (newer) with level i+1 into one file. Merging
+// into the final level drops tombstones physically — nothing below is left to
+// shadow.
+func (kv *KV) compactSSTable(i int) error {
+	dir := kv.Options.Dirpath
+	kv.version++
+	name := fmt.Sprintf("sstable_%d", kv.version)
+
+	var src SortedKV = MergedSortedKV{&kv.main[i], &kv.main[i+1]}
+	if i+2 == len(kv.main) {
+		src = NoDeletedSortedKV{SortedKV: src}
+	}
+	nf := &SortedFile{FileName: filepath.Join(dir, name)}
+	if err := nf.CreateFromSorted(src); err != nil {
+		nf.Close()
+		return err
+	}
+	nf.Close()
+
+	old := kv.meta.Get().SSTables
+	names := make([]string, 0, len(old)-1)
+	names = append(names, old[:i]...)
+	names = append(names, name)
+	names = append(names, old[i+2:]...)
+	if err := kv.meta.Set(KVMetaData{Version: kv.version, SSTables: names}); err != nil {
+		return err
+	}
+
+	superseded := []string{old[i], old[i+1]}
+	if err := kv.openLevels(); err != nil {
+		return err
+	}
+	for _, s := range superseded {
+		_ = os.Remove(filepath.Join(dir, s))
+	}
+	return nil
 }

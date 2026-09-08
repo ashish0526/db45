@@ -12,20 +12,29 @@ watch a relational database grow out of an in-memory map.
 ## Layout
 
 ```
-kv.go        storage engine: Get / Set / Del over []byte keys
-entry.go     on-disk record format (length-prefix, deleted flag, crc32)
-log.go       append-only write-ahead log + replay
-cell.go      typed values (int64 / []byte), value + order-preserving key encodings
-table.go     Schema / Row, rows <-> KV pairs
-db.go        primary-key CRUD, then the SQL engine + system catalog
-parser.go    SQL tokenizer + recursive-descent parser
-expr.go      expression tree + tree-walking interpreter
-sstable.go   immutable sorted files on disk
-merge.go     k-way merge of sorted levels
-meta.go      double-buffered atomic metadata store
+kv.go          storage engine: MemTable + k SSTable levels, Get/Set/Del, Compact
+sortedarray.go the in-memory sorted MemTable (+ tombstones) and its cursor
+entry.go       write-ahead-log record format (length-prefix, deleted flag, crc32)
+log.go         append-only WAL: write, replay, truncate
+fsync.go       createFileSync / syncDir — durable file creation
+cell.go        typed values (int64 / []byte); value + order-preserving key codecs
+table.go       Schema / Row; rows <-> KV key+value; key prefixes with ±inf
+db.go          primary-key CRUD
+exec.go        SQL executor + system catalog (schemas stored as data)
+parser.go      SQL tokenizer + recursive-descent primitives
+parse_value.go literal parsing (int / quoted string)
+parse_stmt.go  statement parsers (SELECT / CREATE / INSERT / UPDATE / DELETE)
+expr.go        expression grammar (full precedence ladder), ExprBinOp / ExprUnOp
+eval.go        tree-walking expression interpreter
+range.go       RangeReq / RangedKVIter / DB.Range (closed intervals, direction)
+rowiter.go     RowIterator: decoded rows, stops at the table boundary
+match.go       matchAllEq — recognise a point-lookup WHERE
+makerange.go   makeRange — pick an access path (scan / point / prefix range)
+sstable.go     immutable sorted files on disk (offset-array index, positioned I/O)
+merge.go       k-way merge of sorted levels, reversible mid-iteration
+filterdel.go   tombstone filtering for reads and last-level merges
+meta.go        double-buffered atomic metadata store (the SSTable level list)
 ```
-
-(Files appear as the steps that introduce them land.)
 
 ## The arc
 
