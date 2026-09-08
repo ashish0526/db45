@@ -1,12 +1,17 @@
 package db
 
-// DB is the relational layer: primary-key CRUD, each operation a thin wrapper
-// over the KV storage engine. Chapter 3 adds a SQL front end on top of this.
+// DB is the relational layer: primary-key CRUD and a SQL front end, each
+// operation a thin wrapper over the KV storage engine. Table schemas live in the
+// KV store itself (the system catalog) and are cached in tables.
 type DB struct {
-	KV KV
+	KV     KV
+	tables map[string]*Schema
 }
 
-func (db *DB) Open() error  { return db.KV.Open() }
+func (db *DB) Open() error {
+	db.tables = map[string]*Schema{}
+	return db.KV.Open()
+}
 func (db *DB) Close() error { return db.KV.Close() }
 
 // Select looks a row up by primary key. The caller fills row's primary-key cells;
