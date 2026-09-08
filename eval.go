@@ -71,14 +71,23 @@ func cmp(a, b *Cell) (int, error) {
 
 func evalBinOp(op ExprOp, left, right *Cell) (*Cell, error) {
 	switch op {
-	case OP_ADD, OP_SUB:
+	case OP_ADD, OP_SUB, OP_MUL, OP_DIV:
 		if left.Type != TypeI64 || right.Type != TypeI64 {
 			return nil, errors.New("arithmetic requires integers")
 		}
-		if op == OP_ADD {
+		switch op {
+		case OP_ADD:
 			return &Cell{Type: TypeI64, I64: left.I64 + right.I64}, nil
+		case OP_SUB:
+			return &Cell{Type: TypeI64, I64: left.I64 - right.I64}, nil
+		case OP_MUL:
+			return &Cell{Type: TypeI64, I64: left.I64 * right.I64}, nil
+		default:
+			if right.I64 == 0 {
+				return nil, errors.New("division by zero")
+			}
+			return &Cell{Type: TypeI64, I64: left.I64 / right.I64}, nil
 		}
-		return &Cell{Type: TypeI64, I64: left.I64 - right.I64}, nil
 
 	case OP_LT, OP_LE, OP_GT, OP_GE:
 		r, err := cmp(left, right)

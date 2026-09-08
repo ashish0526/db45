@@ -22,6 +22,33 @@ func TestParseAddTree(t *testing.T) {
 	}
 }
 
+func TestParsePrecedenceAndParens(t *testing.T) {
+	schema := &Schema{Table: "t", Cols: []Column{{"a", TypeI64}}, PKey: []int{0}}
+	row := Row{{Type: TypeI64, I64: 0}}
+	eval := func(sql string) int64 {
+		t.Helper()
+		e, err := NewParser(sql).parseExpr()
+		if err != nil {
+			t.Fatalf("parse %q: %v", sql, err)
+		}
+		c, err := evalExpr(schema, row, e)
+		if err != nil {
+			t.Fatalf("eval %q: %v", sql, err)
+		}
+		return c.I64
+	}
+
+	if got := eval("2 + 3 * 4"); got != 14 {
+		t.Fatalf("2+3*4 = %d want 14", got)
+	}
+	if got := eval("(2 + 3) * 4"); got != 20 {
+		t.Fatalf("(2+3)*4 = %d want 20", got)
+	}
+	if got := eval("20 / 2 / 5"); got != 2 { // left-assoc
+		t.Fatalf("20/2/5 = %d want 2", got)
+	}
+}
+
 func TestParseAtom(t *testing.T) {
 	if v, _ := NewParser("col_x").parseAtom(); v != "col_x" {
 		t.Fatalf("column atom: %#v", v)

@@ -9,6 +9,8 @@ type ExprOp uint8
 const (
 	OP_ADD ExprOp = 1
 	OP_SUB ExprOp = 2
+	OP_MUL ExprOp = 3
+	OP_DIV ExprOp = 4
 
 	OP_LE ExprOp = 12
 	OP_GE ExprOp = 13
