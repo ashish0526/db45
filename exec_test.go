@@ -123,9 +123,9 @@ func TestExecErrors(t *testing.T) {
 		t.Error("duplicate insert should error")
 	}
 
-	// a non-equality WHERE is not a recognised access path until Step 0507
-	if _, err := db.Exec("select v from t where id > 0"); err == nil {
-		t.Error("range WHERE should be unimplemented at this step")
+	// OR is still not a recognised access path
+	if _, err := db.Exec("select v from t where id = 1 or id = 2"); err == nil {
+		t.Error("OR WHERE should be unimplemented")
 	}
 }
 

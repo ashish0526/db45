@@ -121,15 +121,10 @@ func (p *Parser) parseNeg() (interface{}, error) {
 // parseAtom parses a parenthesised expression (recurse to the top — grouping),
 // a column name, or a literal.
 func (p *Parser) parseAtom() (interface{}, error) {
-	if p.tryPunctuation("(") {
-		inner, err := p.parseExpr()
-		if err != nil {
-			return nil, err
-		}
-		if !p.tryPunctuation(")") {
-			return nil, errors.New("expect )")
-		}
-		return inner, nil
+	p.skipSpaces()
+	if p.pos < len(p.buf) && p.buf[p.pos] == '(' {
+		// parseTuple handles both grouping (one element) and tuples (more).
+		return p.parseTuple()
 	}
 	if name, ok := p.tryName(); ok {
 		return name, nil

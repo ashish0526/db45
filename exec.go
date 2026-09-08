@@ -88,31 +88,6 @@ func (db *DB) execCreateTable(s *StmtCreatTable) error {
 	return nil
 }
 
-// makePKey checks that the WHERE equalities exactly cover the primary key and
-// returns a Row with those key cells filled.
-func makePKey(schema *Schema, keys []NamedCell) (Row, error) {
-	if len(keys) != len(schema.PKey) {
-		return nil, errors.New("WHERE must constrain exactly the primary key")
-	}
-	row := schema.NewRow()
-	for _, pk := range schema.PKey {
-		name := schema.Cols[pk].Name
-		found := false
-		for _, nc := range keys {
-			if nc.column == name {
-				row[pk] = nc.value
-				row[pk].Type = schema.Cols[pk].Type
-				found = true
-				break
-			}
-		}
-		if !found {
-			return nil, fmt.Errorf("primary key column %q not constrained", name)
-		}
-	}
-	return row, nil
-}
-
 // checkExprCols walks an expression tree and errors on any column reference that
 // is not in the schema — so `select nope from t` fails even when t is empty.
 func checkExprCols(schema *Schema, expr interface{}) error {
@@ -167,19 +142,33 @@ func (db *DB) execSelect(s *StmtSelect) ([]string, []Row, error) {
 		header[i] = exprLabel(e, i)
 	}
 
-	row, err := matchPKey(schema, s.cond)
+	it, err := db.execCond(schema, s.cond)
 	if err != nil {
 		return nil, nil, err
 	}
-	ok, err := db.Select(schema, row)
-	if err != nil || !ok {
-		return header, nil, err
+	var rows []Row
+	for ; it.Valid(); it.Next() {
+		proj, err := projectRow(schema, s.cols, it.Row())
+		if err != nil {
+			return nil, nil, err
+		}
+		rows = append(rows, proj)
 	}
-	proj, err := projectRow(schema, s.cols, row)
+	return header, rows, nil
+}
+
+// matchingRows collects every full row a WHERE expression selects, before any
+// mutation — so an UPDATE/DELETE does not disturb the iterator it is walking.
+func (db *DB) matchingRows(schema *Schema, cond interface{}) ([]Row, error) {
+	it, err := db.execCond(schema, cond)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	return header, []Row{proj}, nil
+	var rows []Row
+	for ; it.Valid(); it.Next() {
+		rows = append(rows, it.Row())
+	}
+	return rows, nil
 }
 
 func (db *DB) execInsert(s *StmtInsert) (int, error) {
@@ -210,17 +199,8 @@ func (db *DB) execUpdate(s *StmtUpdate) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	row, err := matchPKey(schema, s.cond)
-	if err != nil {
-		return 0, err
-	}
-	ok, err := db.Select(schema, row)
-	if err != nil || !ok {
-		return 0, err
-	}
-	// Evaluate every RHS against the OLD row first, then assign — so
-	// `SET a = b, b = a` swaps rather than cascades.
-	newVals := make([]Cell, len(s.value))
+	// Validate the SET targets once.
+	idxs := make([]int, len(s.value))
 	for i, asn := range s.value {
 		idx := schema.colIndex(asn.column)
 		if idx < 0 {
@@ -229,22 +209,35 @@ func (db *DB) execUpdate(s *StmtUpdate) (int, error) {
 		if schema.isPKey(idx) {
 			return 0, errors.New("UPDATE cannot change a primary key column")
 		}
-		c, err := evalExpr(schema, row, asn.expr)
-		if err != nil {
-			return 0, err
-		}
-		if c.Type != schema.Cols[idx].Type {
-			return 0, fmt.Errorf("type mismatch assigning to %q", asn.column)
-		}
-		newVals[i] = *c
+		idxs[i] = idx
 	}
-	for i, asn := range s.value {
-		row[schema.colIndex(asn.column)] = newVals[i]
-	}
-	if _, err := db.Update(schema, row); err != nil {
+
+	rows, err := db.matchingRows(schema, s.cond)
+	if err != nil {
 		return 0, err
 	}
-	return 1, nil
+	for _, row := range rows {
+		// Evaluate every RHS against the OLD row first, then assign — so
+		// `SET a = b, b = a` swaps rather than cascades.
+		newVals := make([]Cell, len(s.value))
+		for i, asn := range s.value {
+			c, err := evalExpr(schema, row, asn.expr)
+			if err != nil {
+				return 0, err
+			}
+			if c.Type != schema.Cols[idxs[i]].Type {
+				return 0, fmt.Errorf("type mismatch assigning to %q", asn.column)
+			}
+			newVals[i] = *c
+		}
+		for i := range s.value {
+			row[idxs[i]] = newVals[i]
+		}
+		if _, err := db.Update(schema, row); err != nil {
+			return 0, err
+		}
+	}
+	return len(rows), nil
 }
 
 func (db *DB) execDelete(s *StmtDelete) (int, error) {
@@ -252,13 +245,19 @@ func (db *DB) execDelete(s *StmtDelete) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	row, err := matchPKey(schema, s.cond)
+	rows, err := db.matchingRows(schema, s.cond)
 	if err != nil {
 		return 0, err
 	}
-	ok, err := db.Delete(schema, row)
-	if err != nil || !ok {
-		return 0, err
+	n := 0
+	for _, row := range rows {
+		ok, err := db.Delete(schema, row)
+		if err != nil {
+			return n, err
+		}
+		if ok {
+			n++
+		}
 	}
-	return 1, nil
+	return n, nil
 }
