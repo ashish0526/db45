@@ -2,54 +2,78 @@ package db
 
 import (
 	"encoding/binary"
+	"errors"
+	"hash/crc32"
 	"io"
 )
 
-// Entry is one logged state change. On disk it is a length-prefixed binary blob:
+// ErrBadSum means a record's stored checksum did not match its bytes — a torn
+// write or corruption. On the last record of a log it is treated as a clean end.
+var ErrBadSum = errors.New("bad checksum")
+
+// Entry is one logged state change. On disk it is a length-prefixed binary blob
+// with a leading CRC over everything that follows it:
 //
-//	| key size | val size | deleted | key data | val data |
-//	| 4 bytes  | 4 bytes  | 1 byte  |   ...    |   ...    |
+//	|  crc32  | key size | val size | deleted | key data | val data |
+//	| 4 bytes | 4 bytes  | 4 bytes  | 1 byte  |   ...    |   ...    |
 //
-// The deleted flag lets a single record type represent both "set" and "del".
-// Length-prefixing (rather than delimiters + escaping) is what keeps a storage
-// engine's record format simple, fast and able to carry raw binary.
+// The CRC turns "corrupt" into "detectably corrupt": recompute on read, and a
+// mismatch means the record was not fully written, so replay stops there.
 type Entry struct {
 	key     []byte
 	val     []byte
 	deleted bool
 }
 
+const entryHeaderLen = 4 + 4 + 1 // key size, val size, deleted (the crc-covered header)
+
 // Encode returns the record as a freshly allocated byte slice.
 func (ent *Entry) Encode() []byte {
-	data := make([]byte, 4+4+1+len(ent.key)+len(ent.val))
-	binary.LittleEndian.PutUint32(data[0:4], uint32(len(ent.key)))
-	binary.LittleEndian.PutUint32(data[4:8], uint32(len(ent.val)))
+	data := make([]byte, 4+entryHeaderLen+len(ent.key)+len(ent.val))
+	rest := data[4:]
+	binary.LittleEndian.PutUint32(rest[0:4], uint32(len(ent.key)))
+	binary.LittleEndian.PutUint32(rest[4:8], uint32(len(ent.val)))
 	if ent.deleted {
-		data[8] = 1
+		rest[8] = 1
 	}
-	copy(data[9:], ent.key)
-	copy(data[9+len(ent.key):], ent.val)
+	copy(rest[entryHeaderLen:], ent.key)
+	copy(rest[entryHeaderLen+len(ent.key):], ent.val)
+	binary.LittleEndian.PutUint32(data[0:4], crc32.ChecksumIEEE(rest))
 	return data
 }
 
-// Decode reads one record from r. It takes an io.Reader, not a []byte, because
-// the caller does not know how many bytes a record occupies until it has read
-// the length fields. A clean end of stream surfaces as io.EOF; a stream that
-// ends partway through a record surfaces as io.ErrUnexpectedEOF.
+// Decode reads one record from r and returns exactly one of:
+//
+//	nil                  record OK
+//	io.EOF               clean end of stream (all records valid)
+//	io.ErrUnexpectedEOF  stream ended mid-record (torn write)
+//	ErrBadSum            checksum mismatch (torn write / corruption)
 func (ent *Entry) Decode(r io.Reader) error {
-	var hdr [9]byte
+	var hdr [4 + entryHeaderLen]byte
 	if _, err := io.ReadFull(r, hdr[:]); err != nil {
-		return err // io.EOF here means "clean end of the stream"
+		return err // io.EOF (clean) or io.ErrUnexpectedEOF (torn header)
 	}
-	klen := binary.LittleEndian.Uint32(hdr[0:4])
-	vlen := binary.LittleEndian.Uint32(hdr[4:8])
-	ent.deleted = hdr[8] != 0
+	want := binary.LittleEndian.Uint32(hdr[0:4])
+	klen := binary.LittleEndian.Uint32(hdr[4:8])
+	vlen := binary.LittleEndian.Uint32(hdr[8:12])
+	ent.deleted = hdr[12] != 0
 
-	body := make([]byte, klen+vlen) // one allocation for key+val
+	body := make([]byte, klen+vlen)
 	if _, err := io.ReadFull(r, body); err != nil {
-		return err // a short read mid-record => io.ErrUnexpectedEOF
+		if err == io.EOF {
+			return io.ErrUnexpectedEOF // header promised a body that isn't there
+		}
+		return err
 	}
-	ent.key = body[:klen:klen] // full-slice bound so appends can't bleed into val
+
+	sum := crc32.NewIEEE()
+	sum.Write(hdr[4:]) // the crc-covered header
+	sum.Write(body)
+	if sum.Sum32() != want {
+		return ErrBadSum
+	}
+
+	ent.key = body[:klen:klen]
 	ent.val = body[klen:]
 	return nil
 }

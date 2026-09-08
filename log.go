@@ -41,14 +41,19 @@ func (log *Log) Write(ent *Entry) error {
 	return log.fp.Sync()
 }
 
-// Read decodes the next Entry from the current file position. eof reports a clean
-// end of the log.
+// Read decodes the next Entry from the current file position. eof reports the end
+// of usable log: a clean end (io.EOF), or an incomplete final record — a torn
+// header/body (io.ErrUnexpectedEOF) or a checksum mismatch (ErrBadSum) — which is
+// silently dropped, since damage is always confined to the tail of an
+// append-only file.
 func (log *Log) Read(ent *Entry) (eof bool, err error) {
 	err = ent.Decode(log.fp)
-	if err == io.EOF {
+	switch err {
+	case nil:
+		return false, nil
+	case io.EOF, io.ErrUnexpectedEOF, ErrBadSum:
 		return true, nil
-	} else if err != nil {
+	default:
 		return false, err
 	}
-	return false, nil
 }

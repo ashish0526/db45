@@ -2,6 +2,7 @@ package db
 
 import (
 	"bytes"
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -79,5 +80,40 @@ func TestKVDurability(t *testing.T) {
 	}
 	if _, ok, _ := kv2.Get([]byte("b")); ok {
 		t.Fatalf("deleted key b came back after replay")
+	}
+}
+
+// TestKVTornFinalAppend simulates a power cut in the middle of the last append:
+// the recovered state must be everything up to the last complete record.
+func TestKVTornFinalAppend(t *testing.T) {
+	kv, path := openKV(t)
+	kv.Set([]byte("a"), []byte("1"))
+	kv.Set([]byte("b"), []byte("2"))
+	kv.Close()
+
+	// Append a half-written record: a plausible-looking prefix that ends early.
+	good := (&Entry{key: []byte("c"), val: []byte("3")}).Encode()
+	fp, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fp.Write(good[:len(good)-2])
+	fp.Close()
+
+	kv2 := &KV{}
+	kv2.log.FileName = path
+	if err := kv2.Open(); err != nil {
+		t.Fatalf("Open after torn append: %v", err)
+	}
+	defer kv2.Close()
+
+	if v, ok, _ := kv2.Get([]byte("a")); !ok || string(v) != "1" {
+		t.Fatalf("a: v=%q ok=%v", v, ok)
+	}
+	if v, ok, _ := kv2.Get([]byte("b")); !ok || string(v) != "2" {
+		t.Fatalf("b: v=%q ok=%v", v, ok)
+	}
+	if _, ok, _ := kv2.Get([]byte("c")); ok {
+		t.Fatalf("torn record for c was applied")
 	}
 }
