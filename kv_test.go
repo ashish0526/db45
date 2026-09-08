@@ -98,16 +98,16 @@ func TestKVKeysStaySorted(t *testing.T) {
 	}
 	kv.Del([]byte("q"))
 
-	if !slices.IsSortedFunc(kv.keys, bytes.Compare) {
-		t.Fatalf("keys not sorted: %q", kv.keys)
+	if !slices.IsSortedFunc(kv.mem.keys, bytes.Compare) {
+		t.Fatalf("keys not sorted: %q", kv.mem.keys)
 	}
 	want := []string{"a", "b", "c", "m", "z"}
-	if len(kv.keys) != len(want) {
-		t.Fatalf("keys=%q want %v", kv.keys, want)
+	if kv.mem.Size() != len(want) {
+		t.Fatalf("keys=%q want %v", kv.mem.keys, want)
 	}
 	for i, w := range want {
-		if string(kv.keys[i]) != w {
-			t.Fatalf("keys[%d]=%q want %q", i, kv.keys[i], w)
+		if string(kv.mem.Key(i)) != w {
+			t.Fatalf("keys[%d]=%q want %q", i, kv.mem.Key(i), w)
 		}
 	}
 }

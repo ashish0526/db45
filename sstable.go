@@ -15,7 +15,7 @@ type SortedKV interface {
 	Iter() (SortedKVIter, error)
 }
 
-// SortedKVIter is a cursor over sorted KV data (same shape as KVIterator).
+// SortedKVIter is a cursor over sorted KV data (same shape as SortedArrayIter).
 type SortedKVIter interface {
 	Valid() bool
 	Key() []byte

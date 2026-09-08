@@ -2,30 +2,21 @@
 // sorted key/value store. This file is the storage-engine API.
 package db
 
-import (
-	"bytes"
-	"slices"
-)
-
-// KV is the storage engine. Recent writes live in a pair of parallel slices kept
-// in sorted key order (replacing the Chapter 1-3 map); the write-ahead log still
-// makes them durable and is replayed on Open. Keeping keys sorted is what makes
-// range queries — and everything built on them — possible. Insert/delete shift
-// the tail, so writes are O(N): deliberately bad, to motivate the on-disk
-// B+Tree / LSM-Tree of Chapters 6-7.
+// KV is the storage engine. Recent writes live in an in-memory SortedArray (the
+// MemTable); the write-ahead log makes them durable and is replayed on Open.
+// Chapters 6-7 add immutable on-disk SSTables beneath the same Get/Set/Del
+// surface.
 type KV struct {
-	log  Log
-	keys [][]byte
-	vals [][]byte
+	log Log
+	mem SortedArray
 }
 
-// Open opens the log, then replays it into the sorted arrays.
+// Open opens the log, then replays it into the MemTable.
 func (kv *KV) Open() error {
 	if err := kv.log.Open(); err != nil {
 		return err
 	}
-	kv.keys = kv.keys[:0]
-	kv.vals = kv.vals[:0]
+	kv.mem.Clear()
 
 	for {
 		var ent Entry
@@ -37,9 +28,9 @@ func (kv *KV) Open() error {
 			break
 		}
 		if ent.deleted {
-			kv.applyDel(ent.key)
+			kv.mem.Del(ent.key)
 		} else {
-			kv.applySet(ent.key, ent.val)
+			kv.mem.Set(ent.key, ent.val)
 		}
 	}
 	return nil
@@ -48,40 +39,9 @@ func (kv *KV) Open() error {
 // Close closes the log.
 func (kv *KV) Close() error { return kv.log.Close() }
 
-// search returns the insertion point for key and whether it is already present.
-func (kv *KV) search(key []byte) (int, bool) {
-	return slices.BinarySearchFunc(kv.keys, key, bytes.Compare)
-}
-
-// applySet / applyDel mutate the in-memory arrays only (used by log replay and,
-// after the log write, by SetEx/Del).
-func (kv *KV) applySet(key, val []byte) bool {
-	idx, exist := kv.search(key)
-	if exist {
-		kv.vals[idx] = val
-		return true
-	}
-	kv.keys = slices.Insert(kv.keys, idx, key)
-	kv.vals = slices.Insert(kv.vals, idx, val)
-	return false
-}
-
-func (kv *KV) applyDel(key []byte) bool {
-	idx, exist := kv.search(key)
-	if !exist {
-		return false
-	}
-	kv.keys = slices.Delete(kv.keys, idx, idx+1)
-	kv.vals = slices.Delete(kv.vals, idx, idx+1)
-	return true
-}
-
 // Get returns the value for key. ok reports whether the key was present.
 func (kv *KV) Get(key []byte) (val []byte, ok bool, err error) {
-	if idx, exist := kv.search(key); exist {
-		return kv.vals[idx], true, nil
-	}
-	return nil, false, nil
+	return kv.mem.Get(key)
 }
 
 // UpdateMode selects INSERT / UPDATE / UPSERT semantics for SetEx.
@@ -96,7 +56,7 @@ const (
 // SetEx writes val under key subject to mode. It reports whether a write
 // happened.
 func (kv *KV) SetEx(key, val []byte, mode UpdateMode) (bool, error) {
-	_, existed := kv.search(key)
+	_, existed := kv.mem.search(key)
 	if existed && mode == ModeInsert {
 		return false, nil
 	}
@@ -106,7 +66,7 @@ func (kv *KV) SetEx(key, val []byte, mode UpdateMode) (bool, error) {
 	if err := kv.log.Write(&Entry{key: key, val: val}); err != nil {
 		return false, err
 	}
-	kv.applySet(key, val)
+	kv.mem.Set(key, val)
 	return true, nil
 }
 
@@ -117,12 +77,17 @@ func (kv *KV) Set(key []byte, val []byte) (updated bool, err error) {
 
 // Del removes key. deleted reports whether a value was actually removed.
 func (kv *KV) Del(key []byte) (deleted bool, err error) {
-	if _, existed := kv.search(key); !existed {
+	if _, existed := kv.mem.search(key); !existed {
 		return false, nil
 	}
 	if err := kv.log.Write(&Entry{key: key, deleted: true}); err != nil {
 		return false, err
 	}
-	kv.applyDel(key)
+	kv.mem.Del(key)
 	return true, nil
+}
+
+// Seek returns a cursor over the store, positioned at the first key >= key.
+func (kv *KV) Seek(key []byte) (SortedKVIter, error) {
+	return kv.mem.Seek(key)
 }

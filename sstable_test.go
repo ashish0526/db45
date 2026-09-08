@@ -15,7 +15,7 @@ type memSorted struct {
 
 func (m *memSorted) Size() int { return len(m.keys) }
 func (m *memSorted) Iter() (SortedKVIter, error) {
-	return &KVIterator{keys: m.keys, vals: m.vals, pos: 0}, nil
+	return &SortedArrayIter{keys: m.keys, vals: m.vals, pos: 0}, nil
 }
 
 func TestSortedFileCreateLayout(t *testing.T) {

@@ -25,11 +25,11 @@ const (
 	OP_GT ExprOp = 15
 )
 
-// RangedKVIter is a KVIterator restricted to a closed byte-key interval and a
+// RangedKVIter is a SortedKVIter restricted to a closed byte-key interval and a
 // direction. Ascending: start <= key <= stop, moving forward. Descending:
 // start >= key >= stop, moving backward (ORDER BY ... DESC).
 type RangedKVIter struct {
-	iter *KVIterator
+	iter SortedKVIter
 	stop []byte
 	desc bool
 }

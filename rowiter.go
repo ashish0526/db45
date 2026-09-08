@@ -1,23 +1,14 @@
 package db
 
-// kvCursor is the read cursor a RowIterator walks. Both *KVIterator (unbounded)
-// and *RangedKVIter (bounded to an interval + direction) satisfy it, so the row
-// layer does not care which is underneath.
-type kvCursor interface {
-	Valid() bool
-	Key() []byte
-	Val() []byte
-	Next() error
-	Prev() error
-}
-
-// RowIterator wraps a kvCursor so it yields decoded Rows and stops at the table
-// boundary. After each move the row is decoded eagerly — that is how the
-// iterator knows whether it is still Valid() (in-table) — and cached, so Row()
-// and Valid() are plain getters.
+// RowIterator wraps a SortedKVIter so it yields decoded Rows and stops at the
+// table boundary. Both *SortedArrayIter (unbounded) and *RangedKVIter (bounded
+// to an interval + direction) satisfy SortedKVIter, so the row layer does not
+// care which is underneath. After each move the row is decoded eagerly — that is
+// how the iterator knows whether it is still Valid() (in-table) — and cached, so
+// Row() and Valid() are plain getters.
 type RowIterator struct {
 	schema *Schema
-	iter   kvCursor
+	iter   SortedKVIter
 	valid  bool
 	row    Row
 }
