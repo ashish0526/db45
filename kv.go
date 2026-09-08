@@ -45,15 +45,36 @@ func (kv *KV) Get(key []byte) (val []byte, ok bool, err error) {
 	return val, ok, nil
 }
 
-// Set writes val under key: first durably to the log, then to the map. updated
-// reports whether the key already existed.
-func (kv *KV) Set(key []byte, val []byte) (updated bool, err error) {
+// UpdateMode selects INSERT / UPDATE / UPSERT semantics for SetEx.
+type UpdateMode int
+
+const (
+	ModeUpsert UpdateMode = 0 // insert or overwrite (the original Set)
+	ModeInsert UpdateMode = 1 // only if the key is absent
+	ModeUpdate UpdateMode = 2 // only if the key is present
+)
+
+// SetEx writes val under key subject to mode. It reports whether the database
+// state actually changed. KV.Set was quietly an upsert all along; SQL cares
+// which of the three cases happened, so the storage engine now exposes them.
+func (kv *KV) SetEx(key, val []byte, mode UpdateMode) (bool, error) {
+	_, existed := kv.mem[string(key)]
+	if existed && mode == ModeInsert {
+		return false, nil
+	}
+	if !existed && mode == ModeUpdate {
+		return false, nil
+	}
 	if err := kv.log.Write(&Entry{key: key, val: val}); err != nil {
 		return false, err
 	}
-	_, existed := kv.mem[string(key)]
 	kv.mem[string(key)] = val
-	return existed, nil
+	return true, nil
+}
+
+// Set is an upsert: insert or overwrite, always writing.
+func (kv *KV) Set(key []byte, val []byte) (updated bool, err error) {
+	return kv.SetEx(key, val, ModeUpsert)
 }
 
 // Del removes key: a tombstone record is appended to the log, then the map entry

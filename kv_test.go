@@ -28,15 +28,17 @@ func TestKVGetSetDel(t *testing.T) {
 		t.Fatalf("Get missing: ok=%v err=%v", ok, err)
 	}
 
-	if updated, err := kv.Set([]byte("k1"), []byte("x")); err != nil || updated {
-		t.Fatalf("Set new: updated=%v err=%v", updated, err)
+	// Set is an upsert: it always writes, so the returned bool ("did a write
+	// happen?") is true in both cases. INSERT / UPDATE gating arrives in SetEx.
+	if wrote, err := kv.Set([]byte("k1"), []byte("x")); err != nil || !wrote {
+		t.Fatalf("Set new: wrote=%v err=%v", wrote, err)
 	}
 	if v, ok, err := kv.Get([]byte("k1")); err != nil || !ok || !bytes.Equal(v, []byte("x")) {
 		t.Fatalf("Get k1: v=%q ok=%v err=%v", v, ok, err)
 	}
 
-	if updated, err := kv.Set([]byte("k1"), []byte("y")); err != nil || !updated {
-		t.Fatalf("Set existing: updated=%v err=%v", updated, err)
+	if wrote, err := kv.Set([]byte("k1"), []byte("y")); err != nil || !wrote {
+		t.Fatalf("Set existing: wrote=%v err=%v", wrote, err)
 	}
 	if v, _, _ := kv.Get([]byte("k1")); !bytes.Equal(v, []byte("y")) {
 		t.Fatalf("Get k1 after update: v=%q", v)
@@ -50,6 +52,40 @@ func TestKVGetSetDel(t *testing.T) {
 	}
 	if _, ok, _ := kv.Get([]byte("k1")); ok {
 		t.Fatalf("k1 still present after Del")
+	}
+}
+
+func TestKVSetExModes(t *testing.T) {
+	kv, _ := openKV(t)
+
+	// ModeInsert: writes only when absent.
+	if wrote, _ := kv.SetEx([]byte("k"), []byte("1"), ModeInsert); !wrote {
+		t.Fatal("insert new: want wrote=true")
+	}
+	if wrote, _ := kv.SetEx([]byte("k"), []byte("2"), ModeInsert); wrote {
+		t.Fatal("insert existing: want wrote=false")
+	}
+	if v, _, _ := kv.Get([]byte("k")); string(v) != "1" {
+		t.Fatalf("value clobbered by failed insert: %q", v)
+	}
+
+	// ModeUpdate: writes only when present.
+	if wrote, _ := kv.SetEx([]byte("k"), []byte("3"), ModeUpdate); !wrote {
+		t.Fatal("update existing: want wrote=true")
+	}
+	if wrote, _ := kv.SetEx([]byte("absent"), []byte("x"), ModeUpdate); wrote {
+		t.Fatal("update absent: want wrote=false")
+	}
+	if _, ok, _ := kv.Get([]byte("absent")); ok {
+		t.Fatal("failed update created a key")
+	}
+
+	// ModeUpsert always writes.
+	if wrote, _ := kv.SetEx([]byte("k"), []byte("4"), ModeUpsert); !wrote {
+		t.Fatal("upsert: want wrote=true")
+	}
+	if v, _, _ := kv.Get([]byte("k")); string(v) != "4" {
+		t.Fatalf("upsert value: %q", v)
 	}
 }
 
