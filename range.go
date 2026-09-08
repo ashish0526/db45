@@ -12,6 +12,13 @@ const (
 	OP_MUL ExprOp = 3
 	OP_DIV ExprOp = 4
 
+	OP_OR  ExprOp = 5
+	OP_AND ExprOp = 6
+	OP_NOT ExprOp = 7
+	OP_NEG ExprOp = 8
+	OP_EQ  ExprOp = 9
+	OP_NE  ExprOp = 10
+
 	OP_LE ExprOp = 12
 	OP_GE ExprOp = 13
 	OP_LT ExprOp = 14

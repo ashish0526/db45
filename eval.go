@@ -26,11 +26,34 @@ func evalExpr(schema *Schema, row Row, expr interface{}) (*Cell, error) {
 		if err != nil {
 			return nil, err
 		}
+		// AND / OR short-circuit on the left operand.
+		if e.op == OP_AND && !truthy(left) {
+			return boolCell(false), nil
+		}
+		if e.op == OP_OR && truthy(left) {
+			return boolCell(true), nil
+		}
 		right, err := evalExpr(schema, row, e.right)
 		if err != nil {
 			return nil, err
 		}
 		return evalBinOp(e.op, left, right)
+	case *ExprUnOp:
+		kid, err := evalExpr(schema, row, e.kid)
+		if err != nil {
+			return nil, err
+		}
+		switch e.op {
+		case OP_NOT:
+			return boolCell(!truthy(kid)), nil
+		case OP_NEG:
+			if kid.Type != TypeI64 {
+				return nil, errors.New("unary minus requires an integer")
+			}
+			return &Cell{Type: TypeI64, I64: -kid.I64}, nil
+		default:
+			return nil, fmt.Errorf("unknown unary operator %d", e.op)
+		}
 	default:
 		return nil, fmt.Errorf("cannot evaluate %T", expr)
 	}
@@ -89,6 +112,13 @@ func evalBinOp(op ExprOp, left, right *Cell) (*Cell, error) {
 			return &Cell{Type: TypeI64, I64: left.I64 / right.I64}, nil
 		}
 
+	case OP_EQ, OP_NE:
+		r, err := cmp(left, right)
+		if err != nil {
+			return nil, err
+		}
+		return boolCell((op == OP_EQ) == (r == 0)), nil
+
 	case OP_LT, OP_LE, OP_GT, OP_GE:
 		r, err := cmp(left, right)
 		if err != nil {
@@ -104,6 +134,11 @@ func evalBinOp(op ExprOp, left, right *Cell) (*Cell, error) {
 		default:
 			return boolCell(r >= 0), nil
 		}
+
+	case OP_AND:
+		return boolCell(truthy(left) && truthy(right)), nil
+	case OP_OR:
+		return boolCell(truthy(left) || truthy(right)), nil
 	}
 	return nil, fmt.Errorf("unknown operator %d", op)
 }
