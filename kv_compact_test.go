@@ -2,21 +2,10 @@ package db
 
 import (
 	"os"
-	"path/filepath"
 	"testing"
 )
 
-func openKVWithMain(t *testing.T, dir string) *KV {
-	t.Helper()
-	kv := &KV{}
-	kv.log.FileName = filepath.Join(dir, "kv_log")
-	kv.main.FileName = filepath.Join(dir, "kv_main")
-	if err := kv.Open(); err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	t.Cleanup(func() { kv.Close() })
-	return kv
-}
+func openKVWithMain(t *testing.T, dir string) *KV { return openKVDir(t, dir) }
 
 func TestKVCompaction(t *testing.T) {
 	dir := t.TempDir()
@@ -68,6 +57,32 @@ func TestKVCompaction(t *testing.T) {
 	// the post-compact MemTable writes were only in the log, which... still exists
 	if v, ok, _ := kv2.Get([]byte("b")); !ok || string(v) != "20" {
 		t.Fatalf("after reopen Get b = %q,%v (log replay)", v, ok)
+	}
+}
+
+func TestKVCompactionMetadataCommit(t *testing.T) {
+	dir := t.TempDir()
+	kv := openKVWithMain(t, dir)
+
+	kv.Set([]byte("a"), []byte("1"))
+	kv.Compact() // -> sstable_1
+	kv.Set([]byte("b"), []byte("2"))
+	kv.Compact() // -> sstable_2, sstable_1 deleted
+
+	if _, err := os.Stat(dir + "/sstable_1"); !os.IsNotExist(err) {
+		t.Fatalf("superseded sstable_1 not deleted: %v", err)
+	}
+	if _, err := os.Stat(dir + "/sstable_2"); err != nil {
+		t.Fatalf("sstable_2 missing: %v", err)
+	}
+
+	// reopen: the metadata pointer alone tells Open which file is live
+	kv.Close()
+	kv2 := openKVWithMain(t, dir)
+	for k, want := range map[string]string{"a": "1", "b": "2"} {
+		if v, ok, _ := kv2.Get([]byte(k)); !ok || string(v) != want {
+			t.Fatalf("after reopen Get %q = %q,%v", k, v, ok)
+		}
 	}
 }
 

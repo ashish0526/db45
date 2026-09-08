@@ -5,24 +5,52 @@ package db
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"os"
+	"path/filepath"
 )
 
-var errNoMainFile = errors.New("kv: no main SSTable file configured")
+// KVOptions configures the store. The database owns a directory; the caller only
+// supplies its path.
+type KVOptions struct {
+	Dirpath string
+}
 
-// KV is the storage engine. Two live levels: the in-memory MemTable (recent
-// writes, mirrors the log) and one immutable on-disk SSTable (main). Reads merge
-// them; Compact folds the MemTable into the SSTable and truncates the log.
+// KV is the storage engine. The directory holds the write-ahead log (kv_log),
+// the two metadata slots (meta0/meta1), and the SSTable file(s). The metadata
+// names the current SSTable — the commit point of a compaction is "the metadata
+// now points at the new file".
 type KV struct {
+	Options  KVOptions
+	meta     KVMetaStore
 	log      Log
 	mem      SortedArray
 	main     SortedFile
 	mainOpen bool
+	version  uint64
 }
 
-// Open opens the log and replays it into the MemTable, and opens the SSTable if
-// one exists.
+const logFileName = "kv_log"
+
+// Open readies the directory: opens the metadata, replays the log into the
+// MemTable, and opens the SSTable the metadata names (if any).
 func (kv *KV) Open() error {
+	dir := kv.Options.Dirpath
+	if dir == "" {
+		return errors.New("kv: Options.Dirpath is required")
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	kv.log.FileName = filepath.Join(dir, logFileName)
+	kv.meta.slots[0].FileName = filepath.Join(dir, "meta0")
+	kv.meta.slots[1].FileName = filepath.Join(dir, "meta1")
+
+	if err := kv.meta.Open(); err != nil {
+		return err
+	}
+	kv.version = kv.meta.Get().Version
+
 	if err := kv.log.Open(); err != nil {
 		return err
 	}
@@ -43,19 +71,22 @@ func (kv *KV) Open() error {
 		}
 	}
 
-	if kv.main.FileName != "" {
-		if err := kv.main.Open(); err == nil {
-			kv.mainOpen = true
-		} else if !os.IsNotExist(err) {
+	if name := kv.meta.Get().SSTable; name != "" {
+		kv.main = SortedFile{FileName: filepath.Join(dir, name)}
+		if err := kv.main.Open(); err != nil {
 			return err
 		}
+		kv.mainOpen = true
 	}
 	return nil
 }
 
-// Close closes the log and the SSTable.
+// Close closes the log, the metadata and the SSTable.
 func (kv *KV) Close() error {
 	err := kv.log.Close()
+	if e := kv.meta.Close(); err == nil {
+		err = e
+	}
 	if kv.mainOpen {
 		if e := kv.main.Close(); err == nil {
 			err = e
@@ -154,20 +185,17 @@ func (kv *KV) Seek(key []byte) (SortedKVIter, error) {
 	return filterDeleted(it)
 }
 
-// Compact merges the MemTable into the SSTable via a temp file and an atomic
-// rename, then drops the MemTable and truncates the log. Ordering matters: the
-// new file must be fully written and fsynced before the rename, and the log
-// truncated only after the rename succeeds.
+// Compact folds the MemTable into the SSTable. It writes a new file named
+// sstable_<version>, commits by recording that name in the metadata, then drops
+// the MemTable, truncates the log and deletes the superseded file. A crash
+// before the metadata write just leaves an orphan file the next Open ignores.
 func (kv *KV) Compact() error {
-	if kv.main.FileName == "" {
-		return errNoMainFile
-	}
-	tmp := kv.main.FileName + ".compact"
-	_ = os.Remove(tmp)
+	dir := kv.Options.Dirpath
+	kv.version++
+	name := fmt.Sprintf("sstable_%d", kv.version)
 
-	nf := &SortedFile{FileName: tmp}
-	// The SSTable is the last (and only) level, so tombstones are physically
-	// dropped: nothing below is left to shadow.
+	nf := &SortedFile{FileName: filepath.Join(dir, name)}
+	// The SSTable is the last (and only) level, so tombstones are dropped.
 	src := NoDeletedSortedKV{SortedKV: kv.levels()}
 	if err := nf.CreateFromSorted(src); err != nil {
 		nf.Close()
@@ -175,18 +203,26 @@ func (kv *KV) Compact() error {
 	}
 	nf.Close()
 
-	if err := renameSync(tmp, kv.main.FileName); err != nil {
+	old := kv.meta.Get().SSTable
+	if err := kv.meta.Set(KVMetaData{Version: kv.version, SSTable: name}); err != nil {
 		return err
 	}
+
 	if kv.mainOpen {
 		kv.main.Close()
 	}
-	kv.main = SortedFile{FileName: kv.main.FileName}
+	kv.main = SortedFile{FileName: filepath.Join(dir, name)}
 	if err := kv.main.Open(); err != nil {
 		return err
 	}
 	kv.mainOpen = true
 
 	kv.mem.Clear()
-	return kv.log.Truncate()
+	if err := kv.log.Truncate(); err != nil {
+		return err
+	}
+	if old != "" && old != name {
+		_ = os.Remove(filepath.Join(dir, old))
+	}
+	return nil
 }

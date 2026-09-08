@@ -75,24 +75,15 @@ func TestExecExpressionsInSelectAndUpdate(t *testing.T) {
 }
 
 func TestExecCatalogPersists(t *testing.T) {
-	dir := t.TempDir() + "/log"
+	dir := t.TempDir()
 
-	db1 := &DB{}
-	db1.KV.log.FileName = dir
-	if err := db1.Open(); err != nil {
-		t.Fatal(err)
-	}
+	db1 := openDBDir(t, dir)
 	db1.Exec("create table t (id int64, name string, primary key (id))")
 	db1.Exec("insert into t values (1, 'one')")
 	db1.Close()
 
 	// reopen: schema must be recoverable from the catalog alone
-	db2 := &DB{}
-	db2.KV.log.FileName = dir
-	if err := db2.Open(); err != nil {
-		t.Fatal(err)
-	}
-	defer db2.Close()
+	db2 := openDBDir(t, dir)
 
 	r, err := db2.Exec("select name from t where id = 1")
 	if err != nil {

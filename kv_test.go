@@ -8,18 +8,22 @@ import (
 	"testing"
 )
 
-// openKV returns an opened KV backed by a fresh log file in a temp dir, plus the
-// log path so a test can re-open it to simulate a restart.
+// openKV returns an opened KV over a fresh temp directory, plus that directory so
+// a test can re-open it to simulate a restart.
 func openKV(t *testing.T) (*KV, string) {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "kv_log")
-	kv := &KV{}
-	kv.log.FileName = path
+	dir := t.TempDir()
+	return openKVDir(t, dir), dir
+}
+
+func openKVDir(t *testing.T, dir string) *KV {
+	t.Helper()
+	kv := &KV{Options: KVOptions{Dirpath: dir}}
 	if err := kv.Open(); err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 	t.Cleanup(func() { kv.Close() })
-	return kv, path
+	return kv
 }
 
 func TestKVGetSetDel(t *testing.T) {
@@ -119,7 +123,7 @@ func TestKVKeysStaySorted(t *testing.T) {
 }
 
 func TestKVDurability(t *testing.T) {
-	kv, path := openKV(t)
+	kv, dir := openKV(t)
 
 	kv.Set([]byte("a"), []byte("1"))
 	kv.Set([]byte("b"), []byte("2"))
@@ -128,13 +132,8 @@ func TestKVDurability(t *testing.T) {
 	kv.Set([]byte("c"), []byte("4"))
 	kv.Close()
 
-	// "restart": a fresh KV over the same log must see the replayed state.
-	kv2 := &KV{}
-	kv2.log.FileName = path
-	if err := kv2.Open(); err != nil {
-		t.Fatalf("reopen: %v", err)
-	}
-	defer kv2.Close()
+	// "restart": a fresh KV over the same directory must see the replayed state.
+	kv2 := openKVDir(t, dir)
 
 	want := map[string]string{"a": "3", "c": "4"}
 	for k, w := range want {
@@ -151,26 +150,21 @@ func TestKVDurability(t *testing.T) {
 // TestKVTornFinalAppend simulates a power cut in the middle of the last append:
 // the recovered state must be everything up to the last complete record.
 func TestKVTornFinalAppend(t *testing.T) {
-	kv, path := openKV(t)
+	kv, dir := openKV(t)
 	kv.Set([]byte("a"), []byte("1"))
 	kv.Set([]byte("b"), []byte("2"))
 	kv.Close()
 
 	// Append a half-written record: a plausible-looking prefix that ends early.
 	good := (&Entry{key: []byte("c"), val: []byte("3")}).Encode()
-	fp, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o644)
+	fp, err := os.OpenFile(filepath.Join(dir, "kv_log"), os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		t.Fatal(err)
 	}
 	fp.Write(good[:len(good)-2])
 	fp.Close()
 
-	kv2 := &KV{}
-	kv2.log.FileName = path
-	if err := kv2.Open(); err != nil {
-		t.Fatalf("Open after torn append: %v", err)
-	}
-	defer kv2.Close()
+	kv2 := openKVDir(t, dir)
 
 	if v, ok, _ := kv2.Get([]byte("a")); !ok || string(v) != "1" {
 		t.Fatalf("a: v=%q ok=%v", v, ok)

@@ -2,14 +2,18 @@ package db
 
 import (
 	"bytes"
-	"path/filepath"
 	"testing"
 )
 
 func openDB(t *testing.T) *DB {
 	t.Helper()
+	return openDBDir(t, t.TempDir())
+}
+
+func openDBDir(t *testing.T, dir string) *DB {
+	t.Helper()
 	db := &DB{}
-	db.KV.log.FileName = filepath.Join(t.TempDir(), "kv_log")
+	db.KV.Options.Dirpath = dir
 	if err := db.Open(); err != nil {
 		t.Fatalf("Open: %v", err)
 	}
