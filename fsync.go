@@ -25,6 +25,16 @@ func createFileSync(file string) (*os.File, error) {
 	return fp, nil
 }
 
+// renameSync atomically replaces dst with src, then fsyncs the directory so the
+// rename itself is durable. Linux guarantees rename either fully replaces the
+// destination or does nothing, even across a power cut.
+func renameSync(src, dst string) error {
+	if err := os.Rename(src, dst); err != nil {
+		return err
+	}
+	return syncDir(dst)
+}
+
 // syncDir fsyncs the directory that contains file. A directory file descriptor
 // can be fsynced even though it cannot be read like a regular file.
 func syncDir(file string) error {

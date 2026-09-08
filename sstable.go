@@ -7,19 +7,24 @@ import (
 	"os"
 )
 
-// SortedKV is any source of sorted key/value pairs the SSTable builder can
-// consume: the in-memory array, a merged view of several levels, or a test mock.
-// The builder never knows which.
+// SortedKV is any source of sorted key/value pairs the SSTable builder and the
+// merge layer consume: the in-memory array, a merged view of several levels, or
+// a test mock. EstimatedSize may exceed the true count (a merge drops duplicates
+// and tombstones); the builder handles the slack.
 type SortedKV interface {
-	Size() int
+	EstimatedSize() int
 	Iter() (SortedKVIter, error)
+	Seek(key []byte) (SortedKVIter, error)
 }
 
-// SortedKVIter is a cursor over sorted KV data (same shape as SortedArrayIter).
+// SortedKVIter is a cursor over sorted KV data. Deleted reports whether the
+// current entry is a tombstone (a delete marker that shadows lower levels during
+// a merge and is filtered out of query results).
 type SortedKVIter interface {
 	Valid() bool
 	Key() []byte
 	Val() []byte
+	Deleted() bool
 	Next() error
 	Prev() error
 }
@@ -64,6 +69,9 @@ func (f *SortedFile) Close() error {
 
 // Size reports the number of records.
 func (f *SortedFile) Size() int { return f.nkeys }
+
+// EstimatedSize satisfies SortedKV. For a written file it is exact.
+func (f *SortedFile) EstimatedSize() int { return f.nkeys }
 
 // index reads the pos-th record (0-based) via positioned I/O.
 func (f *SortedFile) index(pos int) (key, val []byte, err error) {
@@ -121,9 +129,10 @@ type SortedFileIter struct {
 	val  []byte
 }
 
-func (it *SortedFileIter) Valid() bool { return 0 <= it.pos && it.pos < it.file.nkeys }
-func (it *SortedFileIter) Key() []byte { return it.key }
-func (it *SortedFileIter) Val() []byte { return it.val }
+func (it *SortedFileIter) Valid() bool   { return 0 <= it.pos && it.pos < it.file.nkeys }
+func (it *SortedFileIter) Key() []byte   { return it.key }
+func (it *SortedFileIter) Val() []byte   { return it.val }
+func (it *SortedFileIter) Deleted() bool { return false } // SSTables at this stage hold no tombstones
 
 func (it *SortedFileIter) load() error {
 	if !it.Valid() {
@@ -168,10 +177,13 @@ func (f *SortedFile) Seek(key []byte) (SortedKVIter, error) {
 	return it, it.load()
 }
 
-// CreateFromSorted writes kv's contents to f in one pass. Because the source
-// reports Size(), n and therefore the byte position where KV data begins are
-// known up front, so KVs stream into the data region while the offset slots are
-// filled out of order with WriteAt.
+// CreateFromSorted writes kv's contents to f in one pass. The offset array is
+// sized from EstimatedSize (an upper bound); records stream into the data region
+// while offset slots are filled out of order with WriteAt. After iterating, the
+// true count is written back to the header — the unused offset slots become a
+// harmless gap:
+//
+//	[ n (true) | offset[0..est-1] | gap | KV records ]
 func (f *SortedFile) CreateFromSorted(kv SortedKV) error {
 	fp, err := createFileSync(f.FileName)
 	if err != nil {
@@ -179,13 +191,8 @@ func (f *SortedFile) CreateFromSorted(kv SortedKV) error {
 	}
 	f.fp = fp
 
-	n := kv.Size()
-	f.nkeys = n
-	if err := writeAllAt(fp, 0, binary.LittleEndian.AppendUint64(nil, uint64(n))); err != nil {
-		return err
-	}
-
-	dataStart := int64(8 + 8*n)
+	est := kv.EstimatedSize()
+	dataStart := int64(8 + 8*est)
 	pos := dataStart
 	off := make([]byte, 8)
 
@@ -193,19 +200,24 @@ func (f *SortedFile) CreateFromSorted(kv SortedKV) error {
 	if err != nil {
 		return err
 	}
-	for i := 0; it.Valid(); i++ {
+	n := 0
+	for ; it.Valid(); n++ {
 		rec := encodeKV(it.Key(), it.Val())
 		if err := writeAllAt(fp, pos, rec); err != nil {
 			return err
 		}
 		binary.LittleEndian.PutUint64(off, uint64(pos))
-		if err := writeAllAt(fp, int64(8+8*i), off); err != nil {
+		if err := writeAllAt(fp, int64(8+8*n), off); err != nil {
 			return err
 		}
 		pos += int64(len(rec))
 		if err := it.Next(); err != nil {
 			return err
 		}
+	}
+	f.nkeys = n
+	if err := writeAllAt(fp, 0, binary.LittleEndian.AppendUint64(nil, uint64(n))); err != nil {
+		return err
 	}
 	return fp.Sync()
 }

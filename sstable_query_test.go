@@ -7,11 +7,7 @@ import (
 
 func buildSST(t *testing.T, pairs [][2]string) *SortedFile {
 	t.Helper()
-	src := &memSorted{}
-	for _, p := range pairs {
-		src.keys = append(src.keys, []byte(p[0]))
-		src.vals = append(src.vals, []byte(p[1]))
-	}
+	src := newMem(pairs...)
 	f := &SortedFile{FileName: filepath.Join(t.TempDir(), "sst")}
 	if err := f.CreateFromSorted(src); err != nil {
 		t.Fatal(err)

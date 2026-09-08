@@ -34,8 +34,9 @@ type RangedKVIter struct {
 	desc bool
 }
 
-func (it *RangedKVIter) Key() []byte { return it.iter.Key() }
-func (it *RangedKVIter) Val() []byte { return it.iter.Val() }
+func (it *RangedKVIter) Key() []byte   { return it.iter.Key() }
+func (it *RangedKVIter) Val() []byte   { return it.iter.Val() }
+func (it *RangedKVIter) Deleted() bool { return it.iter.Deleted() }
 
 // Prev steps against the scan direction (used when a RowIterator reverses).
 func (it *RangedKVIter) Prev() error {

@@ -41,6 +41,18 @@ func (log *Log) Write(ent *Entry) error {
 	return log.fp.Sync()
 }
 
+// Truncate empties the log and rewinds it — called after a compaction has folded
+// the log's contents into an SSTable.
+func (log *Log) Truncate() error {
+	if err := log.fp.Truncate(0); err != nil {
+		return err
+	}
+	if _, err := log.fp.Seek(0, 0); err != nil {
+		return err
+	}
+	return log.fp.Sync()
+}
+
 // Read decodes the next Entry from the current file position. eof reports the end
 // of usable log: a clean end (io.EOF), or an incomplete final record — a torn
 // header/body (io.ErrUnexpectedEOF) or a checksum mismatch (ErrBadSum) — which is

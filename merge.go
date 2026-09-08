@@ -9,21 +9,30 @@ import "bytes"
 // cursor per level and repeatedly emit the extreme current key.
 type MergedSortedKV []SortedKV
 
-// Size is the sum of level sizes — an over-estimate once duplicates and
+// EstimatedSize is the sum of level sizes — an over-estimate once duplicates and
 // tombstones are removed.
-func (m MergedSortedKV) Size() int {
+func (m MergedSortedKV) EstimatedSize() int {
 	n := 0
 	for _, s := range m {
-		n += s.Size()
+		n += s.EstimatedSize()
 	}
 	return n
 }
 
 // Iter returns a merged cursor positioned at the start.
 func (m MergedSortedKV) Iter() (SortedKVIter, error) {
+	return m.cursor(func(s SortedKV) (SortedKVIter, error) { return s.Iter() })
+}
+
+// Seek returns a merged cursor positioned at the first key >= key.
+func (m MergedSortedKV) Seek(key []byte) (SortedKVIter, error) {
+	return m.cursor(func(s SortedKV) (SortedKVIter, error) { return s.Seek(key) })
+}
+
+func (m MergedSortedKV) cursor(open func(SortedKV) (SortedKVIter, error)) (SortedKVIter, error) {
 	levels := make([]SortedKVIter, len(m))
 	for i, sub := range m {
-		it, err := sub.Iter()
+		it, err := open(sub)
 		if err != nil {
 			return nil, err
 		}
@@ -56,9 +65,10 @@ func (it *MergedSortedKVIter) captureFrontier() {
 	it.frontier = append([]byte(nil), it.Key()...)
 }
 
-func (it *MergedSortedKVIter) Valid() bool { return it.which >= 0 }
-func (it *MergedSortedKVIter) Key() []byte { return it.levels[it.which].Key() }
-func (it *MergedSortedKVIter) Val() []byte { return it.levels[it.which].Val() }
+func (it *MergedSortedKVIter) Valid() bool   { return it.which >= 0 }
+func (it *MergedSortedKVIter) Key() []byte   { return it.levels[it.which].Key() }
+func (it *MergedSortedKVIter) Val() []byte   { return it.levels[it.which].Val() }
+func (it *MergedSortedKVIter) Deleted() bool { return it.levels[it.which].Deleted() }
 
 // extreme returns the index of the level holding the smallest (ascending) or
 // largest (descending) current key, ties won by the lowest index, or -1.

@@ -96,18 +96,24 @@ func TestKVKeysStaySorted(t *testing.T) {
 	for _, k := range ins {
 		kv.Set([]byte(k), []byte("v"))
 	}
-	kv.Del([]byte("q"))
+	kv.Del([]byte("q")) // becomes a tombstone in the MemTable
 
 	if !slices.IsSortedFunc(kv.mem.keys, bytes.Compare) {
 		t.Fatalf("keys not sorted: %q", kv.mem.keys)
 	}
+	// The tombstone-filtered scan yields the live keys in order.
+	it, _ := kv.Seek([]byte(""))
+	var got []string
+	for ; it.Valid(); it.Next() {
+		got = append(got, string(it.Key()))
+	}
 	want := []string{"a", "b", "c", "m", "z"}
-	if kv.mem.Size() != len(want) {
-		t.Fatalf("keys=%q want %v", kv.mem.keys, want)
+	if len(got) != len(want) {
+		t.Fatalf("live keys = %q want %v", got, want)
 	}
 	for i, w := range want {
-		if string(kv.mem.Key(i)) != w {
-			t.Fatalf("keys[%d]=%q want %q", i, kv.mem.Key(i), w)
+		if got[i] != w {
+			t.Fatalf("live[%d]=%q want %q", i, got[i], w)
 		}
 	}
 }

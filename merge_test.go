@@ -2,14 +2,7 @@ package db
 
 import "testing"
 
-func ms(pairs ...[2]string) *memSorted {
-	m := &memSorted{}
-	for _, p := range pairs {
-		m.keys = append(m.keys, []byte(p[0]))
-		m.vals = append(m.vals, []byte(p[1]))
-	}
-	return m
-}
+func ms(pairs ...[2]string) *memSorted { return newMem(pairs...) }
 
 func drain(it SortedKVIter) []string {
 	var out []string
