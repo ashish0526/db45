@@ -46,7 +46,13 @@ Chapter 4  0401-0405  range queries               sorted order, iterators, ORDER
 Chapter 5  0501-0507  real SQL expressions        an expression tree + interpreter
 Chapter 6  0601-0605  data on disk                SSTables, k-way merge, compaction
 Chapter 7  0701-0704  the LSM-Tree                many SSTable levels, atomic metadata
+Chapter 8  (book only) indexes                    secondary indexes, B+Tree — see DESIGN.md
+Chapter 9  (book only) concurrency                locking, MVCC, snapshot isolation — see DESIGN.md
 ```
+
+The free site publishes 39 pages (2 setup + 37 numbered steps); this repo
+implements all 37 as commits `Step 0101` .. `Step 0704`. Chapters 8-9 (the
+remaining "45") are book-only and covered conceptually in `DESIGN.md`.
 
 ## Running
 

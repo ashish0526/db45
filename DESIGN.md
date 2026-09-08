@@ -55,3 +55,31 @@ levels to check — mitigated with Bloom filters).
 
 Chapter 7 generalises "MemTable + 1 SSTable" to "MemTable + k SSTables". The new
 problems are all about **tracking a changing set of files atomically**.
+
+## Parts 8-9 — Indexes and Concurrency (book only)
+
+The free site stops at Step 0704; Chapters 8-9 are sold as the book. The notebook
+reconstructs them conceptually and this repo does not implement them. In brief,
+built on the primitives already here:
+
+**Indexes (Chapter 8).** A secondary index is *another KV keyspace*:
+`table-prefix · "idx" · index-id · EncodeKey(cols) · EncodeKey(primary-key) -> ()`.
+A lookup range-scans the index prefix, decodes the primary key out of each
+matching key, then `DB.Select`s the row (skipped for a covering index). The
+primary-key suffix makes non-unique indexes work and keeps entries distinct.
+`Insert`/`Update`/`Delete` must write index entries in the same atomic batch as
+the row. `makeRange` generalises into a mini planner that picks the tightest
+index (or the primary key, or a full scan). This chapter is also where the
+**B+Tree** — fixed-size pages, copy-on-write or double-buffered page updates,
+a free-list, the same `SortedKV`/iterator interfaces — is typically built as the
+in-place-update alternative to the LSM engine.
+
+**Concurrency (Chapter 9).** Transactions buffer their writes and append them to
+the log as one atomic batch ended by a commit marker, fsync once, then apply — a
+crash before the marker discards the batch (the torn-tail mechanism from Step
+0105, reused deliberately). Isolation via reader/writer locks (two-phase locking
+= serializable, with deadlock detection). **MVCC** fits an LSM naturally: tag
+every write with a sequence number, store keys as `EncodeKey(user-key) · (^seqno)`,
+let a reader take a snapshot seqno and skip newer versions during the k-way
+merge; compaction GCs versions older than the oldest live snapshot. Write
+conflicts are caught at commit time (optimistic concurrency control).
