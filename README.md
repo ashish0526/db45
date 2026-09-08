@@ -5,10 +5,15 @@ A worked, **commit-by-commit** implementation of the *Trial of Code* series
 relational SQL database built as a set of data structures layered over a sorted
 key/value store, ending in a working **LSM-Tree** storage engine.
 
-The whole thing is **one evolving Go package**. Every numbered step is a single
-commit that edits the package in place and leaves `go test ./...` green. Reading
+Every numbered step is a single commit that leaves `go test ./...` green. Reading
 `git log --reverse` (or the **Commits** tab on GitHub) walks you from an in-memory
 `map` to an on-disk log-structured merge tree with a SQL front end.
+
+The 45 steps are built as **one package** (that is how the course teaches it — one
+program, growing). The final commits then split that package into three layers —
+`storage/` (the LSM engine), `table/` (schema + rows over KV), `sql/` (parser,
+interpreter, planner) — so the finished code reads like a real project. To follow
+a single step, check that commit out; to use the library, import the packages.
 
 ```
 in-memory map → serialize records → append-only log → fsync → per-record checksum
@@ -32,7 +37,6 @@ git clone <this repo>
 cd db45
 git log --reverse --oneline          # the 45 steps, oldest first
 git show <hash>                       # one step's code + a note on what it teaches
-go test ./... -run TestKV -v          # watch that step's behaviour
 ```
 
 On GitHub: open the **Commits** list and click each `Step NNNN — …` commit to see
@@ -41,10 +45,14 @@ its diff and the explanation in the commit message.
 To build/run at a specific step:
 
 ```bash
-git checkout <hash>      # detached HEAD at that step
+git checkout <hash>              # detached HEAD at that step
 go test ./...
-git checkout master      # back to the finished engine
+go test ./... -run TestEntry -v  # watch that step's behaviour
+git checkout main               # back to the finished engine
 ```
+
+At most of the 45 steps the code is still one flat package; the layered
+`storage/ table/ sql/` layout only appears in the last few commits.
 
 ## The 45 steps
 
@@ -103,6 +111,29 @@ The free site publishes 39 pages (2 setup + 37 numbered steps); this repo
 implements all 37 as commits `Step 0101` … `Step 0704`. Chapters 8–9 (the
 remaining "45") are book-only and covered conceptually in `DESIGN.md`.
 
+## Package layout
+
+```
+storage/   the LSM storage engine — []byte keys and values only
+           KV, KVOptions, Get/Set/Del/SetEx/Seek/Range/Compact
+           log, SSTable, k-way merge, tombstone filter, atomic metadata
+
+table/     the relational layer over storage
+           Cell (int64 / []byte), Schema, Row, order-preserving key codecs
+           DB — primary-key Select/Insert/Upsert/Update/Delete
+           RowIterator — decoded rows, stops at the table boundary
+
+sql/       the SQL front end over table
+           Parser (tokenizer + recursive descent), expression grammar
+           evalExpr (tree-walking interpreter)
+           Engine — Exec(sql) + the system catalog
+           planner — recognise a WHERE shape, pick an access path
+
+examples/basic/   a runnable end-to-end demo
+```
+
+Import direction is a straight line: `sql → table → storage`.
+
 ## Try it
 
 ```go
@@ -111,37 +142,45 @@ package main
 import (
 	"fmt"
 
-	db "github.com/ashish0526/db45"
+	"github.com/ashish0526/db45/sql"
+	"github.com/ashish0526/db45/table"
 )
 
 func main() {
-	d := &db.DB{}
-	d.KV.Options.Dirpath = "./data" // owns this directory
-	must(d.Open())
-	defer d.Close()
+	db := &table.DB{}
+	db.KV.Options.Dirpath = "./data" // the engine owns this directory
 
-	d.Exec(`create table link (t int64, src string, dst string, primary key (src, dst))`)
-	d.Exec(`insert into link values (1700, 'alice', 'bob')`)
-	d.Exec(`insert into link values (1701, 'alice', 'carol')`)
+	eng := sql.NewEngine(db)
+	must(eng.Open())
+	defer eng.Close()
 
-	r, _ := d.Exec(`select t, dst from link where src = 'alice'`)
+	eng.Exec(`create table link (t int64, src string, dst string, primary key (src, dst))`)
+	eng.Exec(`insert into link values (1700, 'alice', 'bob')`)
+	eng.Exec(`insert into link values (1701, 'alice', 'carol')`)
+
+	r, _ := eng.Exec(`select src, dst, t from link where (src, dst) >= ('alice', 'bob')`)
 	for _, row := range r.Values {
-		fmt.Println(row[0].I64, string(row[1].Str))
+		fmt.Printf("%s -> %s @%d\n", row[0].Str, row[1].Str, row[2].I64)
 	}
-	// 1700 bob
-	// 1701 carol
 
-	d.KV.Compact() // fold the MemTable into an SSTable
+	db.KV.Compact() // fold the MemTable into an SSTable
 }
 
-func must(err error) { if err != nil { panic(err) } }
+func must(err error) {
+	if err != nil {
+		panic(err)
+	}
+}
 ```
+
+Run the full demo with `go run ./examples/basic`.
 
 Supported SQL: `CREATE TABLE` (`int64` / `string` columns, `primary key (...)`),
 `INSERT INTO … VALUES (...)`, `SELECT <exprs> FROM t [WHERE <expr>]`,
 `UPDATE t SET col = <expr>, … [WHERE <expr>]`, `DELETE FROM t [WHERE <expr>]`.
-`WHERE` supports point lookups (`a = 1 AND b = 2`), ranges over a primary-key
-prefix (`a > 1`, `a >= 1 AND a < 9`, `(a,b) > (1,2)`), and full scans.
+`WHERE` supports point lookups on the whole primary key (`a = 1 AND b = 2`),
+ranges over a primary-key prefix (`a > 1`, `a >= 1 AND a < 9`, `(a,b) > (1,2)`),
+and full scans (no `WHERE`).
 
 ## Running the tests
 
@@ -155,25 +194,39 @@ Requires Go 1.21+ (uses the standard-library `slices` package).
 
 ## Source layout
 
+**`storage/`**
+
 | file | role |
 | --- | --- |
-| `kv.go` | storage engine: MemTable + k SSTable levels, `Get/Set/Del`, `Compact` |
+| `kv.go` | the engine: MemTable + k SSTable levels, `Get/Set/Del`, `Compact` |
 | `sortedarray.go` | the in-memory sorted MemTable (with tombstones) and its cursor |
 | `entry.go` | WAL record format — length-prefix, deleted flag, crc32 |
 | `log.go` | append-only write-ahead log: write, replay, truncate |
 | `fsync.go` | `createFileSync` / `syncDir` — durable file creation |
-| `cell.go` | typed values; value + order-preserving key codecs |
-| `table.go` | `Schema` / `Row`; rows ↔ KV key + value; key prefixes with ±∞ |
-| `db.go` | primary-key CRUD |
-| `exec.go` | SQL executor + system catalog (schemas stored as data) |
-| `parser.go`, `parse_value.go`, `parse_stmt.go` | tokenizer + recursive-descent statement parsers |
-| `expr.go`, `eval.go` | expression grammar + tree-walking interpreter |
-| `range.go`, `rowiter.go` | `DB.Range`, closed-interval iteration, decoded-row iteration |
-| `match.go`, `makerange.go` | recognise a WHERE shape → pick an access path |
 | `sstable.go` | immutable sorted files on disk (offset-array index, positioned I/O) |
 | `merge.go` | k-way merge of sorted levels, reversible mid-iteration |
 | `filterdel.go` | tombstone filtering for reads and last-level merges |
+| `ranged.go` | `KV.Range` — a closed byte-key interval + direction |
 | `meta.go` | double-buffered atomic metadata store (the SSTable level list) |
+
+**`table/`**
+
+| file | role |
+| --- | --- |
+| `cell.go` | typed values; value + order-preserving key codecs |
+| `schema.go` | `Schema` / `Row`; rows ↔ KV key + value; key prefixes with ±∞ |
+| `db.go` | primary-key CRUD |
+| `rowiter.go` | `RowIterator` — decoded rows, stops at the table boundary |
+
+**`sql/`**
+
+| file | role |
+| --- | --- |
+| `parser.go`, `parse_value.go`, `parse_stmt.go` | tokenizer + recursive-descent statement parsers |
+| `expr.go`, `eval.go` | expression grammar + tree-walking interpreter |
+| `stmt.go` | parsed-statement structs |
+| `engine.go` | `Engine.Exec` + system catalog (schemas stored as data) |
+| `planner.go`, `match.go` | recognise a WHERE shape → pick an access path; `Range` |
 
 ## Credits
 

@@ -1,0 +1,53 @@
+package sql
+
+import "github.com/ashish0526/db45/table"
+
+// NamedCell is a "column = value" pair, as it appears in a WHERE or SET clause.
+type NamedCell struct {
+	column string
+	value  table.Cell
+}
+
+// The parsed statement types. parseStmt returns one of these via interface{};
+// the executor switches on the concrete type (Go keeps the type tag, unlike a
+// C void*).
+
+// StmtSelect is `select a*4-b, d+c from t where <expr>`. Both the output columns
+// and the WHERE clause are now arbitrary expressions.
+type StmtSelect struct {
+	table string
+	cols  []interface{} // output expressions
+	cond  interface{}   // WHERE expression, or nil
+}
+
+// ExprAssign is one `column = expression` in an UPDATE ... SET list.
+type ExprAssign struct {
+	column string
+	expr   interface{}
+}
+
+// StmtCreatTable is `create table t (a int64, b string, primary key (a))`.
+type StmtCreatTable struct {
+	table string
+	cols  []table.Column
+	pkey  []string
+}
+
+// StmtInsert is `insert into t values (1, 'x')`.
+type StmtInsert struct {
+	table string
+	value []table.Cell
+}
+
+// StmtUpdate is `update t set a = a-b, b = a where <expr>`.
+type StmtUpdate struct {
+	table string
+	cond  interface{}
+	value []ExprAssign
+}
+
+// StmtDelete is `delete from t where <expr>`.
+type StmtDelete struct {
+	table string
+	cond  interface{}
+}
