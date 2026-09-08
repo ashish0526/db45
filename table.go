@@ -49,7 +49,7 @@ func (schema *Schema) NewRow() Row { return make(Row, len(schema.Cols)) }
 func (row Row) EncodeKey(schema *Schema) (key []byte) {
 	key = append([]byte(schema.Table), 0x00)
 	for _, idx := range schema.PKey {
-		key = row[idx].Encode(key)
+		key = row[idx].EncodeKey(key)
 	}
 	return key
 }
@@ -58,7 +58,7 @@ func (row Row) EncodeKey(schema *Schema) (key []byte) {
 func (row Row) EncodeVal(schema *Schema) (val []byte) {
 	for i := range schema.Cols {
 		if !schema.isPKey(i) {
-			val = row[i].Encode(val)
+			val = row[i].EncodeVal(val)
 		}
 	}
 	return val
@@ -76,7 +76,7 @@ func (row Row) DecodeKey(schema *Schema, key []byte) error {
 	for _, idx := range schema.PKey {
 		row[idx].Type = schema.Cols[idx].Type
 		var err error
-		if rest, err = row[idx].Decode(rest); err != nil {
+		if rest, err = row[idx].DecodeKey(rest); err != nil {
 			return err
 		}
 	}
@@ -92,7 +92,7 @@ func (row Row) DecodeVal(schema *Schema, val []byte) error {
 		}
 		row[i].Type = schema.Cols[i].Type
 		var err error
-		if rest, err = row[i].Decode(rest); err != nil {
+		if rest, err = row[i].DecodeVal(rest); err != nil {
 			return err
 		}
 	}
