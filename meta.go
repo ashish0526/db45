@@ -9,10 +9,10 @@ import (
 )
 
 // KVMetaData is the small, whole-rewritten piece of state that names the current
-// SSTable(s). It becomes []string in Step 0703.
+// SSTable levels, newest first.
 type KVMetaData struct {
-	Version uint64
-	SSTable string
+	Version  uint64
+	SSTables []string
 }
 
 // KVMetaItem is one on-disk slot: [ crc32 | version | json(data) ], where crc32

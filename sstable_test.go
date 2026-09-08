@@ -44,8 +44,9 @@ func TestSortedFileCreateLayout(t *testing.T) {
 		off := binary.LittleEndian.Uint64(raw[8+8*i : 16+8*i])
 		klen := binary.LittleEndian.Uint32(raw[off : off+4])
 		vlen := binary.LittleEndian.Uint32(raw[off+4 : off+8])
-		key := raw[off+8 : off+8+uint64(klen)]
-		val := raw[off+8+uint64(klen) : off+8+uint64(klen)+uint64(vlen)]
+		// raw[off+8] is the deleted flag
+		key := raw[off+9 : off+9+uint64(klen)]
+		val := raw[off+9+uint64(klen) : off+9+uint64(klen)+uint64(vlen)]
 		if string(key) != want[i][0] || string(val) != want[i][1] {
 			t.Fatalf("record %d: {%q,%q} want %v", i, key, val, want[i])
 		}

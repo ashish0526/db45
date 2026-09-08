@@ -28,9 +28,9 @@ func TestSortedFileIndexAndSearch(t *testing.T) {
 	if f.Size() != 4 {
 		t.Fatalf("Size = %d", f.Size())
 	}
-	k, v, err := f.index(2)
-	if err != nil || string(k) != "e" || string(v) != "5" {
-		t.Fatalf("index(2) = %q,%q,%v", k, v, err)
+	k, v, del, err := f.index(2)
+	if err != nil || string(k) != "e" || string(v) != "5" || del {
+		t.Fatalf("index(2) = %q,%q,%v,%v", k, v, del, err)
 	}
 
 	pos, found, _ := f.search([]byte("c"))

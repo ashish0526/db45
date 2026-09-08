@@ -22,12 +22,12 @@ func TestMetaStoreRoundTripAndAlternation(t *testing.T) {
 	dir := t.TempDir()
 	m := newMetaStore(t, dir)
 
-	if got := m.Get(); got.Version != 0 || got.SSTable != "" {
+	if got := m.Get(); got.Version != 0 || len(got.SSTables) != 0 {
 		t.Fatalf("fresh Get = %+v", got)
 	}
 
 	for v := uint64(1); v <= 5; v++ {
-		if err := m.Set(KVMetaData{Version: v, SSTable: "sstable_" + string(rune('0'+v))}); err != nil {
+		if err := m.Set(KVMetaData{Version: v, SSTables: []string{"sstable_" + string(rune('0'+v))}}); err != nil {
 			t.Fatalf("Set v%d: %v", v, err)
 		}
 		if got := m.Get(); got.Version != v {
@@ -51,8 +51,8 @@ func TestMetaStoreRoundTripAndAlternation(t *testing.T) {
 func TestMetaStoreSurvivesCorruptSlot(t *testing.T) {
 	dir := t.TempDir()
 	m := newMetaStore(t, dir)
-	m.Set(KVMetaData{Version: 1, SSTable: "a"})
-	m.Set(KVMetaData{Version: 2, SSTable: "b"}) // slot 1
+	m.Set(KVMetaData{Version: 1, SSTables: []string{"a"}})
+	m.Set(KVMetaData{Version: 2, SSTables: []string{"b"}}) // slot 1
 	m.Close()
 
 	// Corrupt the newer slot (slot 1). Recovery must fall back to slot 0 (v1).
@@ -62,12 +62,12 @@ func TestMetaStoreSurvivesCorruptSlot(t *testing.T) {
 
 	m2 := newMetaStore(t, dir)
 	got := m2.Get()
-	if got.Version != 1 || got.SSTable != "a" {
+	if got.Version != 1 || len(got.SSTables) != 1 || got.SSTables[0] != "a" {
 		t.Fatalf("recovery = %+v want {1 a}", got)
 	}
 
 	// and the next Set can still make progress (writing the corrupt slot)
-	if err := m2.Set(KVMetaData{Version: 3, SSTable: "c"}); err != nil {
+	if err := m2.Set(KVMetaData{Version: 3, SSTables: []string{"c"}}); err != nil {
 		t.Fatalf("Set after recovery: %v", err)
 	}
 	if m2.Get().Version != 3 {

@@ -21,13 +21,12 @@ type KVOptions struct {
 // names the current SSTable — the commit point of a compaction is "the metadata
 // now points at the new file".
 type KV struct {
-	Options  KVOptions
-	meta     KVMetaStore
-	log      Log
-	mem      SortedArray
-	main     SortedFile
-	mainOpen bool
-	version  uint64
+	Options KVOptions
+	meta    KVMetaStore
+	log     Log
+	mem     SortedArray
+	main    []SortedFile // SSTable levels, newest (main[0]) to oldest
+	version uint64
 }
 
 const logFileName = "kv_log"
@@ -71,35 +70,44 @@ func (kv *KV) Open() error {
 		}
 	}
 
-	if name := kv.meta.Get().SSTable; name != "" {
-		kv.main = SortedFile{FileName: filepath.Join(dir, name)}
-		if err := kv.main.Open(); err != nil {
+	return kv.openLevels()
+}
+
+// openLevels (re)opens the SSTable files the metadata names.
+func (kv *KV) openLevels() error {
+	for i := range kv.main {
+		kv.main[i].Close()
+	}
+	kv.main = nil
+	for _, name := range kv.meta.Get().SSTables {
+		f := SortedFile{FileName: filepath.Join(kv.Options.Dirpath, name)}
+		if err := f.Open(); err != nil {
 			return err
 		}
-		kv.mainOpen = true
+		kv.main = append(kv.main, f)
 	}
 	return nil
 }
 
-// Close closes the log, the metadata and the SSTable.
+// Close closes the log, the metadata and every SSTable level.
 func (kv *KV) Close() error {
 	err := kv.log.Close()
 	if e := kv.meta.Close(); err == nil {
 		err = e
 	}
-	if kv.mainOpen {
-		if e := kv.main.Close(); err == nil {
+	for i := range kv.main {
+		if e := kv.main[i].Close(); err == nil {
 			err = e
 		}
 	}
 	return err
 }
 
-// levels returns the live levels, newest first.
+// levels returns the live levels, newest first: the MemTable then each SSTable.
 func (kv *KV) levels() MergedSortedKV {
 	m := MergedSortedKV{&kv.mem}
-	if kv.mainOpen {
-		m = append(m, &kv.main)
+	for i := range kv.main {
+		m = append(m, &kv.main[i])
 	}
 	return m
 }
@@ -113,15 +121,18 @@ func (kv *KV) Get(key []byte) (val []byte, ok bool, err error) {
 	case entryTombstone:
 		return nil, false, nil
 	}
-	if !kv.mainOpen {
-		return nil, false, nil
-	}
-	it, err := kv.main.Seek(key)
-	if err != nil {
-		return nil, false, err
-	}
-	if it.Valid() && bytes.Equal(it.Key(), key) {
-		return it.Val(), true, nil
+	// consult SSTable levels newest-first; the first hit wins
+	for i := range kv.main {
+		it, err := kv.main[i].Seek(key)
+		if err != nil {
+			return nil, false, err
+		}
+		if it.Valid() && bytes.Equal(it.Key(), key) {
+			if it.Deleted() {
+				return nil, false, nil
+			}
+			return it.Val(), true, nil
+		}
 	}
 	return nil, false, nil
 }
@@ -185,44 +196,33 @@ func (kv *KV) Seek(key []byte) (SortedKVIter, error) {
 	return filterDeleted(it)
 }
 
-// Compact folds the MemTable into the SSTable. It writes a new file named
-// sstable_<version>, commits by recording that name in the metadata, then drops
-// the MemTable, truncates the log and deletes the superseded file. A crash
-// before the metadata write just leaves an orphan file the next Open ignores.
+// Compact converts the current MemTable to a fresh SSTable and prepends it as
+// main[0], committing by recording the new level list in the metadata. Tombstones
+// are kept — main[0] is the newest level, not the last, so a delete marker still
+// has older copies to shadow. SSTable-to-SSTable merging (and dropping tombstones
+// at the last level) is Step 0704.
 func (kv *KV) Compact() error {
+	if kv.mem.Size() == 0 {
+		return nil
+	}
 	dir := kv.Options.Dirpath
 	kv.version++
 	name := fmt.Sprintf("sstable_%d", kv.version)
 
 	nf := &SortedFile{FileName: filepath.Join(dir, name)}
-	// The SSTable is the last (and only) level, so tombstones are dropped.
-	src := NoDeletedSortedKV{SortedKV: kv.levels()}
-	if err := nf.CreateFromSorted(src); err != nil {
+	if err := nf.CreateFromSorted(&kv.mem); err != nil {
 		nf.Close()
 		return err
 	}
 	nf.Close()
 
-	old := kv.meta.Get().SSTable
-	if err := kv.meta.Set(KVMetaData{Version: kv.version, SSTable: name}); err != nil {
+	names := append([]string{name}, kv.meta.Get().SSTables...)
+	if err := kv.meta.Set(KVMetaData{Version: kv.version, SSTables: names}); err != nil {
 		return err
 	}
-
-	if kv.mainOpen {
-		kv.main.Close()
-	}
-	kv.main = SortedFile{FileName: filepath.Join(dir, name)}
-	if err := kv.main.Open(); err != nil {
+	if err := kv.openLevels(); err != nil {
 		return err
 	}
-	kv.mainOpen = true
-
 	kv.mem.Clear()
-	if err := kv.log.Truncate(); err != nil {
-		return err
-	}
-	if old != "" && old != name {
-		_ = os.Remove(filepath.Join(dir, old))
-	}
-	return nil
+	return kv.log.Truncate()
 }

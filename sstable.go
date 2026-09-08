@@ -73,29 +73,34 @@ func (f *SortedFile) Size() int { return f.nkeys }
 // EstimatedSize satisfies SortedKV. For a written file it is exact.
 func (f *SortedFile) EstimatedSize() int { return f.nkeys }
 
-// index reads the pos-th record (0-based) via positioned I/O.
-func (f *SortedFile) index(pos int) (key, val []byte, err error) {
+// index reads the pos-th record (0-based) via positioned I/O. Every level except
+// the last needs tombstones, so each record carries a deleted flag:
+//
+//	| key length | val length | deleted | key data | val data |
+//	     4B           4B          1B
+func (f *SortedFile) index(pos int) (key, val []byte, deleted bool, err error) {
 	if pos < 0 || pos >= f.nkeys {
-		return nil, nil, errors.New("sstable: index out of range")
+		return nil, nil, false, errors.New("sstable: index out of range")
 	}
-	var buf [8]byte
-	if _, err = f.fp.ReadAt(buf[:], int64(8+8*pos)); err != nil {
-		return nil, nil, err
+	var hdr [9]byte
+	if _, err = f.fp.ReadAt(hdr[:8], int64(8+8*pos)); err != nil {
+		return nil, nil, false, err
 	}
-	offset := int64(binary.LittleEndian.Uint64(buf[:]))
+	offset := int64(binary.LittleEndian.Uint64(hdr[:8]))
 	if offset < int64(8+8*f.nkeys) {
-		return nil, nil, errors.New("sstable: corrupted file")
+		return nil, nil, false, errors.New("sstable: corrupted file")
 	}
-	if _, err = f.fp.ReadAt(buf[:], offset); err != nil {
-		return nil, nil, err
+	if _, err = f.fp.ReadAt(hdr[:], offset); err != nil {
+		return nil, nil, false, err
 	}
-	klen := binary.LittleEndian.Uint32(buf[0:4])
-	vlen := binary.LittleEndian.Uint32(buf[4:8])
+	klen := binary.LittleEndian.Uint32(hdr[0:4])
+	vlen := binary.LittleEndian.Uint32(hdr[4:8])
+	deleted = hdr[8] != 0
 	body := make([]byte, klen+vlen)
-	if _, err = f.fp.ReadAt(body, offset+8); err != nil {
-		return nil, nil, err
+	if _, err = f.fp.ReadAt(body, offset+9); err != nil {
+		return nil, nil, false, err
 	}
-	return body[:klen:klen], body[klen:], nil
+	return body[:klen:klen], body[klen:], deleted, nil
 }
 
 // search returns the position of the first key >= target and whether it is an
@@ -104,7 +109,7 @@ func (f *SortedFile) search(target []byte) (int, bool, error) {
 	lo, hi := 0, f.nkeys
 	for lo < hi {
 		mid := (lo + hi) / 2
-		k, _, err := f.index(mid)
+		k, _, _, err := f.index(mid)
 		if err != nil {
 			return 0, false, err
 		}
@@ -123,27 +128,28 @@ func (f *SortedFile) search(target []byte) (int, bool, error) {
 // SortedFileIter walks an SSTable. key/val are cached eagerly after each move so
 // Key()/Val() are getters and I/O errors surface through Next/Prev.
 type SortedFileIter struct {
-	file *SortedFile
-	pos  int
-	key  []byte
-	val  []byte
+	file    *SortedFile
+	pos     int
+	key     []byte
+	val     []byte
+	deleted bool
 }
 
 func (it *SortedFileIter) Valid() bool   { return 0 <= it.pos && it.pos < it.file.nkeys }
 func (it *SortedFileIter) Key() []byte   { return it.key }
 func (it *SortedFileIter) Val() []byte   { return it.val }
-func (it *SortedFileIter) Deleted() bool { return false } // SSTables at this stage hold no tombstones
+func (it *SortedFileIter) Deleted() bool { return it.deleted }
 
 func (it *SortedFileIter) load() error {
 	if !it.Valid() {
-		it.key, it.val = nil, nil
+		it.key, it.val, it.deleted = nil, nil, false
 		return nil
 	}
-	k, v, err := it.file.index(it.pos)
+	k, v, d, err := it.file.index(it.pos)
 	if err != nil {
 		return err
 	}
-	it.key, it.val = k, v
+	it.key, it.val, it.deleted = k, v, d
 	return nil
 }
 
@@ -202,7 +208,7 @@ func (f *SortedFile) CreateFromSorted(kv SortedKV) error {
 	}
 	n := 0
 	for ; it.Valid(); n++ {
-		rec := encodeKV(it.Key(), it.Val())
+		rec := encodeKV(it.Key(), it.Val(), it.Deleted())
 		if err := writeAllAt(fp, pos, rec); err != nil {
 			return err
 		}
@@ -222,13 +228,16 @@ func (f *SortedFile) CreateFromSorted(kv SortedKV) error {
 	return fp.Sync()
 }
 
-// encodeKV serializes one KV record: | keylen(4) | vallen(4) | key | val |.
-func encodeKV(key, val []byte) []byte {
-	rec := make([]byte, 8+len(key)+len(val))
+// encodeKV serializes one record: | keylen(4) | vallen(4) | deleted(1) | key | val |.
+func encodeKV(key, val []byte, deleted bool) []byte {
+	rec := make([]byte, 9+len(key)+len(val))
 	binary.LittleEndian.PutUint32(rec[0:4], uint32(len(key)))
 	binary.LittleEndian.PutUint32(rec[4:8], uint32(len(val)))
-	copy(rec[8:], key)
-	copy(rec[8+len(key):], val)
+	if deleted {
+		rec[8] = 1
+	}
+	copy(rec[9:], key)
+	copy(rec[9+len(key):], val)
 	return rec
 }
 
