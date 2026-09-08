@@ -64,13 +64,15 @@ func (row Row) EncodeVal(schema *Schema) (val []byte) {
 	return val
 }
 
-var errKeyPrefix = errors.New("row: key does not belong to this table")
+// ErrOutOfRange means a decoded KV key belongs to a different table — the signal
+// that a table scan has run past the end of its keyspace.
+var ErrOutOfRange = errors.New("row: key does not belong to this table")
 
 // DecodeKey fills the primary-key cells of row from a KV key.
 func (row Row) DecodeKey(schema *Schema, key []byte) error {
 	prefix := schema.Table + "\x00"
 	if len(key) < len(prefix) || string(key[:len(prefix)]) != prefix {
-		return errKeyPrefix
+		return ErrOutOfRange
 	}
 	rest := key[len(prefix):]
 	for _, idx := range schema.PKey {

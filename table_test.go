@@ -51,8 +51,8 @@ func TestRowKeyValRoundTrip(t *testing.T) {
 func TestDecodeKeyWrongTable(t *testing.T) {
 	schema := linkSchema()
 	got := schema.NewRow()
-	if err := got.DecodeKey(schema, []byte("other\x00stuff")); err != errKeyPrefix {
-		t.Fatalf("got %v want errKeyPrefix", err)
+	if err := got.DecodeKey(schema, []byte("other\x00stuff")); err != ErrOutOfRange {
+		t.Fatalf("got %v want ErrOutOfRange", err)
 	}
 }
 
