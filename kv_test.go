@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 )
 
@@ -86,6 +87,28 @@ func TestKVSetExModes(t *testing.T) {
 	}
 	if v, _, _ := kv.Get([]byte("k")); string(v) != "4" {
 		t.Fatalf("upsert value: %q", v)
+	}
+}
+
+func TestKVKeysStaySorted(t *testing.T) {
+	kv, _ := openKV(t)
+	ins := []string{"m", "a", "z", "c", "b", "q", "a"} // note the duplicate
+	for _, k := range ins {
+		kv.Set([]byte(k), []byte("v"))
+	}
+	kv.Del([]byte("q"))
+
+	if !slices.IsSortedFunc(kv.keys, bytes.Compare) {
+		t.Fatalf("keys not sorted: %q", kv.keys)
+	}
+	want := []string{"a", "b", "c", "m", "z"}
+	if len(kv.keys) != len(want) {
+		t.Fatalf("keys=%q want %v", kv.keys, want)
+	}
+	for i, w := range want {
+		if string(kv.keys[i]) != w {
+			t.Fatalf("keys[%d]=%q want %q", i, kv.keys[i], w)
+		}
 	}
 }
 
