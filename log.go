@@ -15,9 +15,10 @@ type Log struct {
 	fp       *os.File
 }
 
-// Open creates the log file if it does not exist and opens it for read+write.
+// Open creates the log file if it does not exist and opens it for read+write,
+// fsyncing the parent directory so the file itself is durable.
 func (log *Log) Open() (err error) {
-	log.fp, err = os.OpenFile(log.FileName, os.O_RDWR|os.O_CREATE, 0o644)
+	log.fp, err = createFileSync(log.FileName)
 	return err
 }
 
@@ -29,10 +30,15 @@ func (log *Log) Close() error {
 	return log.fp.Close()
 }
 
-// Write appends one encoded Entry to the end of the log.
+// Write appends one encoded Entry and fsyncs the file. The write is not durable
+// until Sync returns: plain write(2) only copies bytes into the OS page cache,
+// which a power cut loses. fsync is slow (a real disk round-trip) — every Set
+// pays one here; real databases batch writes into one fsync (group commit).
 func (log *Log) Write(ent *Entry) error {
-	_, err := log.fp.Write(ent.Encode())
-	return err
+	if _, err := log.fp.Write(ent.Encode()); err != nil {
+		return err
+	}
+	return log.fp.Sync()
 }
 
 // Read decodes the next Entry from the current file position. eof reports a clean
