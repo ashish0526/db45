@@ -1,7 +1,9 @@
 package db
 
 import (
+	"bytes"
 	"encoding/binary"
+	"errors"
 	"os"
 )
 
@@ -34,6 +36,22 @@ type SortedKVIter interface {
 type SortedFile struct {
 	FileName string
 	fp       *os.File
+	nkeys    int
+}
+
+// Open opens an existing SSTable and reads its key count.
+func (f *SortedFile) Open() error {
+	fp, err := os.OpenFile(f.FileName, os.O_RDONLY, 0)
+	if err != nil {
+		return err
+	}
+	f.fp = fp
+	var buf [8]byte
+	if _, err := fp.ReadAt(buf[:], 0); err != nil {
+		return err
+	}
+	f.nkeys = int(binary.LittleEndian.Uint64(buf[:]))
+	return nil
 }
 
 // Close closes the underlying file.
@@ -42,6 +60,112 @@ func (f *SortedFile) Close() error {
 		return nil
 	}
 	return f.fp.Close()
+}
+
+// Size reports the number of records.
+func (f *SortedFile) Size() int { return f.nkeys }
+
+// index reads the pos-th record (0-based) via positioned I/O.
+func (f *SortedFile) index(pos int) (key, val []byte, err error) {
+	if pos < 0 || pos >= f.nkeys {
+		return nil, nil, errors.New("sstable: index out of range")
+	}
+	var buf [8]byte
+	if _, err = f.fp.ReadAt(buf[:], int64(8+8*pos)); err != nil {
+		return nil, nil, err
+	}
+	offset := int64(binary.LittleEndian.Uint64(buf[:]))
+	if offset < int64(8+8*f.nkeys) {
+		return nil, nil, errors.New("sstable: corrupted file")
+	}
+	if _, err = f.fp.ReadAt(buf[:], offset); err != nil {
+		return nil, nil, err
+	}
+	klen := binary.LittleEndian.Uint32(buf[0:4])
+	vlen := binary.LittleEndian.Uint32(buf[4:8])
+	body := make([]byte, klen+vlen)
+	if _, err = f.fp.ReadAt(body, offset+8); err != nil {
+		return nil, nil, err
+	}
+	return body[:klen:klen], body[klen:], nil
+}
+
+// search returns the position of the first key >= target and whether it is an
+// exact match. Binary search directly on the on-disk offset array.
+func (f *SortedFile) search(target []byte) (int, bool, error) {
+	lo, hi := 0, f.nkeys
+	for lo < hi {
+		mid := (lo + hi) / 2
+		k, _, err := f.index(mid)
+		if err != nil {
+			return 0, false, err
+		}
+		switch bytes.Compare(k, target) {
+		case 0:
+			return mid, true, nil
+		case -1:
+			lo = mid + 1
+		default:
+			hi = mid
+		}
+	}
+	return lo, false, nil
+}
+
+// SortedFileIter walks an SSTable. key/val are cached eagerly after each move so
+// Key()/Val() are getters and I/O errors surface through Next/Prev.
+type SortedFileIter struct {
+	file *SortedFile
+	pos  int
+	key  []byte
+	val  []byte
+}
+
+func (it *SortedFileIter) Valid() bool { return 0 <= it.pos && it.pos < it.file.nkeys }
+func (it *SortedFileIter) Key() []byte { return it.key }
+func (it *SortedFileIter) Val() []byte { return it.val }
+
+func (it *SortedFileIter) load() error {
+	if !it.Valid() {
+		it.key, it.val = nil, nil
+		return nil
+	}
+	k, v, err := it.file.index(it.pos)
+	if err != nil {
+		return err
+	}
+	it.key, it.val = k, v
+	return nil
+}
+
+func (it *SortedFileIter) Next() error {
+	if it.pos < it.file.nkeys {
+		it.pos++
+	}
+	return it.load()
+}
+
+func (it *SortedFileIter) Prev() error {
+	if it.pos >= 0 {
+		it.pos--
+	}
+	return it.load()
+}
+
+// Iter returns a cursor at the start of the file.
+func (f *SortedFile) Iter() (SortedKVIter, error) {
+	it := &SortedFileIter{file: f, pos: 0}
+	return it, it.load()
+}
+
+// Seek returns a cursor positioned at the first key >= key.
+func (f *SortedFile) Seek(key []byte) (SortedKVIter, error) {
+	pos, _, err := f.search(key)
+	if err != nil {
+		return nil, err
+	}
+	it := &SortedFileIter{file: f, pos: pos}
+	return it, it.load()
 }
 
 // CreateFromSorted writes kv's contents to f in one pass. Because the source
@@ -56,6 +180,7 @@ func (f *SortedFile) CreateFromSorted(kv SortedKV) error {
 	f.fp = fp
 
 	n := kv.Size()
+	f.nkeys = n
 	if err := writeAllAt(fp, 0, binary.LittleEndian.AppendUint64(nil, uint64(n))); err != nil {
 		return err
 	}
