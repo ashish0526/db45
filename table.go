@@ -43,13 +43,32 @@ type Row []Cell
 func (schema *Schema) NewRow() Row { return make(Row, len(schema.Cols)) }
 
 // EncodeKey builds the KV key: the table prefix ("name\x00", whose 0x00
-// separator stops tables "ab" and "abc" from colliding) followed by each primary
-// key column. The primary key IS the KV key — that is how a plain KV store
-// becomes an OLTP relational database.
+// separator stops tables "ab" and "abc" from colliding), then each primary-key
+// column preceded by its one-byte type tag (1..2, never 0xff), then a trailing
+// 0x00. The type tag guarantees a real column never starts with 0xff, so 0xff is
+// free to mean "+infinity" in a prefix bound; the trailing 0x00 (one byte > "")
+// keeps a full key sorting after the same prefix padded with -infinity.
 func (row Row) EncodeKey(schema *Schema) (key []byte) {
 	key = append([]byte(schema.Table), 0x00)
 	for _, idx := range schema.PKey {
+		key = append(key, byte(row[idx].Type))
 		key = row[idx].EncodeKey(key)
+	}
+	return append(key, 0x00)
+}
+
+// EncodeKeyPrefix builds a partial key from the first prefix columns of a
+// primary key, padded with a sentinel for the open end: 0xff (+infinity) when
+// positive, nothing (-infinity) otherwise. Turning "(a,b) OP (x,y)" into a
+// single byte-string comparison is the crux of every real range scan.
+func EncodeKeyPrefix(schema *Schema, prefix []Cell, positive bool) []byte {
+	key := append([]byte(schema.Table), 0x00)
+	for i := range prefix {
+		key = append(key, byte(prefix[i].Type))
+		key = prefix[i].EncodeKey(key)
+	}
+	if positive {
+		key = append(key, 0xff)
 	}
 	return key
 }
@@ -76,13 +95,17 @@ func (row Row) DecodeKey(schema *Schema, key []byte) error {
 	}
 	rest := key[len(prefix):]
 	for _, idx := range schema.PKey {
+		if len(rest) < 1 {
+			return errShortCell
+		}
+		rest = rest[1:] // skip the one-byte type tag
 		row[idx].Type = schema.Cols[idx].Type
 		var err error
 		if rest, err = row[idx].DecodeKey(rest); err != nil {
 			return err
 		}
 	}
-	return nil
+	return nil // a trailing 0x00 may remain; it is not part of any column
 }
 
 // DecodeVal fills the non-primary-key cells of row from a KV value.
